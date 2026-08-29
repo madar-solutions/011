@@ -866,6 +866,43 @@ fix(api): reject spent coupons when applied, not only at checkout
 
 ---
 
+## [58] المستخدم
+
+```
+abandonReservation في عنا مشكلة بهي الميثود اذا تم الارجاع من غير التحقق من اكتمال الدفع
+```
+
+---
+
+## [59] المساعد — لا إرجاع مخزون قبل دفتر البوابة
+
+> المهلة على `reserved` كانت تُرجع المخزون بينما `/charge` قد يكون وافق قبل كتابة Redis `charged`. الآن `lookupCharge(GET /charges)` حسب `reference`: إن وُجد `approved` نُكمل `commitPaid` ولا نُرجع. إن تعذّر الدفتر نترك الحجز. `abandonReservation` لا يلمس المخزون إلا إذا حذف طلبًا `pending`.
+> e2e: tests 36 pass 36.
+
+### توقف
+
+> أنتظر الموافقة على الكوميت.
+
+---
+
+## [60] المستخدم
+
+```
+اعمل كوميت
+```
+
+---
+
+## [61] المساعد — كوميت التسوية قبل الإرجاع
+
+```
+fix(api): reconcile GET /charges before releasing a reservation
+```
+
+> لا نُرجع مخزونًا حتى يؤكد دفتر البوابة أن الخصم لم يكتمل. إن وُجد approved نُكمل الطلب.
+
+---
+
 
 
 

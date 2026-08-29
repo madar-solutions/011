@@ -32,7 +32,7 @@ import {
   type OrderDetailJson,
   type OrderListItemJson,
 } from './order.presenter';
-import { chargeCard, type ChargeCard } from './payments.client';
+import { chargeCard, lookupCharge, type ChargeCard } from './payments.client';
 
 type Tx = Prisma.TransactionClient;
 
@@ -68,12 +68,28 @@ export class OrdersService {
         key,
         ttlSeconds,
       );
-      await this.redis.set(key, JSON.stringify(result), ttlSeconds);
+      if (this.shouldPersistOutcome(result, await this.redis.get(key))) {
+        await this.redis.set(key, JSON.stringify(result), ttlSeconds);
+      }
       return result;
     } catch (error) {
       const parsed = parseIdempotency(await this.redis.get(key));
       if (parsed && 'kind' in parsed && parsed.kind === 'charged') {
         return storedHttpFromException(error);
+      }
+      if (parsed && 'kind' in parsed && parsed.kind === 'reserved') {
+        const settled = await this.reconcileCharge(requestId, parsed.snapshot);
+        if (settled.kind === 'committed') {
+          await this.redis.set(
+            key,
+            JSON.stringify(settled.http),
+            ttlSeconds,
+          );
+          return settled.http;
+        }
+        if (settled.kind === 'unknown') {
+          return storedHttpFromException(error);
+        }
       }
       const stored = storedHttpFromException(error);
       await this.redis.set(key, JSON.stringify(stored), ttlSeconds);
@@ -139,7 +155,12 @@ export class OrdersService {
       return stored;
     }
     if (parsed && parsed.kind === 'reserved') {
-      await this.abandonReservation(requestId, parsed.snapshot);
+      const settled = await this.reconcileCharge(requestId, parsed.snapshot);
+      if (settled.kind === 'committed') {
+        await this.redis.set(key, JSON.stringify(settled.http), ttlSeconds);
+        return settled.http;
+      }
+      if (settled.kind === 'unknown') return processingUnavailable();
       const stored = processingUnavailable();
       await this.redis.set(key, JSON.stringify(stored), ttlSeconds);
       return stored;
@@ -183,7 +204,9 @@ export class OrdersService {
         };
       }
       if (charge.kind === 'unavailable') {
-        await this.abandonReservation(requestId, snapshot);
+        const settled = await this.reconcileCharge(requestId, snapshot);
+        if (settled.kind === 'committed') return settled.http;
+        if (settled.kind === 'unknown') return processingUnavailable();
         return {
           statusCode: HttpStatus.SERVICE_UNAVAILABLE,
           body: errorEnvelope(
@@ -192,6 +215,7 @@ export class OrdersService {
           ),
         };
       }
+      charged = true;
       await this.redis.set(
         key,
         JSON.stringify({
@@ -201,10 +225,13 @@ export class OrdersService {
         }),
         ttlSeconds,
       );
-      charged = true;
       return this.finishCharged(requestId, snapshot, charge.chargeId);
     } catch (error) {
-      if (!charged) await this.abandonReservation(requestId, snapshot);
+      if (!charged) {
+        const settled = await this.reconcileCharge(requestId, snapshot);
+        if (settled.kind === 'committed') return settled.http;
+        if (settled.kind === 'unknown') throw error;
+      }
       throw error;
     }
   }
@@ -435,6 +462,37 @@ export class OrdersService {
     });
   }
 
+  private shouldPersistOutcome(result: StoredHttp, raw: string | null): boolean {
+    if (result.statusCode !== HttpStatus.SERVICE_UNAVAILABLE) return true;
+    const parsed = parseIdempotency(raw);
+    return !(parsed && 'kind' in parsed && parsed.kind === 'reserved');
+  }
+
+  private async reconcileCharge(
+    requestId: string,
+    snapshot: CheckoutSnapshot,
+  ): Promise<
+    | { kind: 'committed'; http: StoredHttp }
+    | { kind: 'abandoned' }
+    | { kind: 'unknown' }
+  > {
+    const found = await lookupCharge({
+      url: this.config.getOrThrow<string>('PAYMENTS_URL'),
+      reference: requestId,
+    });
+    if (found.kind === 'unknown') return { kind: 'unknown' };
+    if (found.kind === 'approved') {
+      const http = await this.finishCharged(
+        requestId,
+        snapshot,
+        found.chargeId,
+      );
+      return { kind: 'committed', http };
+    }
+    await this.abandonReservation(requestId, snapshot);
+    return { kind: 'abandoned' };
+  }
+
   private async abandonReservation(
     requestId: string,
     snapshot: CheckoutSnapshot,
@@ -445,10 +503,8 @@ export class OrdersService {
           userId_requestId: { userId: snapshot.userId, requestId },
         },
       });
-      if (existing?.status === 'paid') return;
-      if (existing?.status === 'pending') {
-        await tx.order.delete({ where: { id: existing.id } });
-      }
+      if (!existing || existing.status !== 'pending') return;
+      await tx.order.delete({ where: { id: existing.id } });
       for (const line of snapshot.lines) {
         await tx.product.update({
           where: { id: line.productId },

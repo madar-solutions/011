@@ -10,8 +10,18 @@ export type ChargeResult =
   | { kind: 'declined'; chargeId: string | null }
   | { kind: 'unavailable' };
 
+export type ChargeLookup =
+  | { kind: 'approved'; chargeId: string }
+  | { kind: 'declined' }
+  | { kind: 'none' }
+  | { kind: 'unknown' };
+
 function digits(number: string): string {
   return number.replace(/\D/g, '');
+}
+
+function paymentsOrigin(url: string): string {
+  return url.replace(/\/$/, '');
 }
 
 export async function chargeCard(input: {
@@ -24,7 +34,7 @@ export async function chargeCard(input: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), input.timeoutMs);
   try {
-    const res = await fetch(`${input.url.replace(/\/$/, '')}/charge`, {
+    const res = await fetch(`${paymentsOrigin(input.url)}/charge`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -52,6 +62,41 @@ export async function chargeCard(input: {
     return { kind: 'unavailable' };
   } catch {
     return { kind: 'unavailable' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Ledger check before compensating a reservation. Never treat a fetch error as "no charge". */
+export async function lookupCharge(input: {
+  url: string;
+  reference: string;
+}): Promise<ChargeLookup> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const res = await fetch(`${paymentsOrigin(input.url)}/charges`, {
+      signal: controller.signal,
+    });
+    if (!res.ok) return { kind: 'unknown' };
+    const body = (await res.json()) as {
+      charges?: Array<{
+        id?: string;
+        reference?: string | null;
+        status?: string;
+      }>;
+    };
+    const match = [...(body.charges ?? [])]
+      .reverse()
+      .find((c) => c.reference === input.reference);
+    if (!match) return { kind: 'none' };
+    if (match.status === 'approved' && match.id) {
+      return { kind: 'approved', chargeId: match.id };
+    }
+    if (match.status === 'declined') return { kind: 'declined' };
+    return { kind: 'unknown' };
+  } catch {
+    return { kind: 'unknown' };
   } finally {
     clearTimeout(timer);
   }
