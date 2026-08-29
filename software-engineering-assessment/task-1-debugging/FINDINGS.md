@@ -17,11 +17,10 @@ order the reasoning actually happened — including a prediction that turned out
 a judgement I had to retract — are in [`ANALYSIS-JOURNAL.md`](ANALYSIS-JOURNAL.md), and
 the complete AI session is in [`AI-CONVERSATION.md`](AI-CONVERSATION.md).
 
-> **Status.** Incident 2291 is analysed, fixed and verified: the fixture goes from
-> **320/596 to 570/596** and `npm test` from 19 tests to **38, all passing**. The 26 rows
-> that still fail are **exactly** the ones attributed to incident 2304 before the fix was
-> written — same ids, no new failures, nothing fixed by accident. Incident 2304 has been
-> located and quantified but not yet fixed; its section below says how far it got.
+> **Status.** Both incidents are analysed, fixed and verified. The reference fixture goes
+> from **320/596 to 596/596** and `npm test` from 19 tests to **49, all passing**.
+> Incident 2291 accounted for 250 of the 276 failing rows and incident 2304 for the other
+> 26 — a split predicted before either fix was written, and confirmed exactly by both.
 
 ---
 
@@ -434,10 +433,6 @@ the fix.
 
 ## Incident 2304 - room unavailable on a turnover day
 
-> **Not yet fixed.** Located and quantified during the 2291 investigation; the full
-> treatment follows the same five phases. Recorded here at the level it has actually
-> reached, rather than left blank.
-
 ### Reproduction
 
 ```bash
@@ -458,52 +453,200 @@ curl -s -X PATCH localhost:3000/reservations/RES-11150 \
 
 ### Root cause
 
-**The same conceptual root as 2291 — a half-open interval treated as closed — in a different
-layer, and it needs a different fix.**
+**"Is this room type available?" had two independent implementations, and they had drifted
+apart on two separate axes.**
 
 ```js
-// src/services/reservationService.js:10
-function overlaps(reservation, checkIn, checkOut) {
-  return reservation.check_in <= checkOut && reservation.check_out >= checkIn;
-}
+// src/repositories/availabilityRepo.js  — served GET /availability
+WHERE r.room_type_id = ? AND r.check_in <= ? AND r.check_out >= ?
+
+// src/services/reservationService.js:10 — served POST /reservations and PATCH
+reservation.check_in <= checkOut && reservation.check_out >= checkIn
+...filter((r) => r.status === 'confirmed' && overlaps(r, checkIn, checkOut))
 ```
 
-Both comparisons are inclusive. Two stays that merely *touch* — one checking out on the day
-the other checks in — are counted as overlapping, which contradicts `SPEC.md` §2: *"a stay's
-departure date may be the same as the next stay's arrival date."* The correct predicate for
-half-open ranges is strict on both sides. `availabilityRepo.countOverlapping` carries the
-same defect, which is why `/availability` and `POST /reservations` agree with each other and
-are both wrong.
+**Axis one — the interval convention.** Both are inclusive at both ends, so both are wrong.
+Two stays that merely *touch* — one checking out on the day the other checks in — are counted
+as overlapping, contradicting `SPEC.md` §2: *"a stay's departure date may be the same as the
+next stay's arrival date."* For half-open ranges the test is strict on both sides.
 
-There is a **second, independent defect** in the same area, and it must not be merged into
-the first: `assertRoomsLeft` is called from `changeDates` without excluding the reservation
-being modified (`reservationService.js:58`), so a booking competes with itself when its dates
-change. Fixing the interval comparison alone will not fix `E0593`/`E0594`.
+The fixture pins **both** ends independently, which a single reading of the code does not:
+
+| row | window | expected | actual | phantom bookings |
+|---|---|---:|---:|---:|
+| `A0459` | STD 2026-11-10..11-11 (one night) | 2 | 0 | **2** |
+| `A0456` | STD 2026-11-10..11-12 | 1 | 0 | **1** |
+
+The one-night window over-counts by two while longer windows over-count by one. Only an
+inclusive comparison at *both* ends explains that: a booking **departing** on 11-10 is counted
+in every window, while a booking **arriving** on 11-11 is counted spuriously only in the
+one-night window, because in longer windows it genuinely overlaps.
+
+**Axis two — the status filter.** `reservationService` excludes cancelled reservations;
+`availabilityRepo` **does not filter status at all**. `SPEC.md` §5 is explicit: *"a cancelled
+reservation frees the room immediately and does not count towards occupancy thereafter."*
+So `/availability` counted cancelled bookings as occupancy and the booking endpoint did not.
+This is the axis the code review nearly missed, and it is not repairable by any amount of care
+with interval bounds — `A0479` and `A0487` are windows that genuinely overlap a cancelled
+booking.
+
+The consequence is a system that contradicts itself within a second:
+
+```jsonc
+GET  /availability?roomTypeId=SUI&checkIn=2026-10-08&checkOut=2026-10-11
+  → {"available": 0}                 // "the suite is full"
+POST /reservations, same dates
+  → 201 Created                      // and the booking succeeds
+```
+
+**A third, independent defect**, which must not be merged into the first two: `changeDates`
+called `assertRoomsLeft` without excluding the reservation being modified
+(`reservationService.js:58`), so a booking competed with itself. `RES-11150`'s own dates
+overlap its requested new dates under *any* definition of overlap, strict or loose, so no
+endpoint correction can fix `E0593`/`E0594`.
+
+**Why it survived a year.** `availabilityService.js:21` computes
+`Math.max(0, total_rooms - booked)`, so an over-count surfaces as an ordinary-looking
+"0 available" rather than a negative number. And unlike 2291 this defect leaves no trace:
+2291 overcharged guests, which produces refunds and complaints; 2304 **hides sellable
+inventory**, and a customer who is turned away does not come back to complain.
 
 ### Why the obvious fix is not enough
 
-Not yet established by measurement — this is the analysis that remains. What is already
-known: the fix must handle both defects, and the `<=`/`>=` correction alone will not close
-the ticket's second half. There is also a **trap** waiting here, found while probing the
-fixture: `C0592`, a 365-night create, currently passes for the **wrong reason** — it is
-refused with `NO_ROOMS_AVAILABLE`, not by any stay-length rule, because the 180-night maximum
-does not exist anywhere in `src/`. Any change that makes overlap counting less aggressive
-risks flipping that row red unless the `SPEC.md` §2 length cap is added at the same time.
+Measured, not argued. Each candidate applied to an isolated copy of `src/` and replayed
+against the fixture (baseline after the 2291 fix: 570/596). Full output:
+[`evidence/2304-rejected-quick-fixes.md`](evidence/2304-rejected-quick-fixes.md).
+
+| candidate | change | fixture | regression tests | verdict |
+|---|---|---:|---|---|
+| **D1** | `availabilityRepo` SQL only | **590/596** | 6 pass / 5 fail | **makes the product worse** |
+| D2 | both overlap predicates | 592/596 | 7 pass / 4 fail | ignores `SPEC.md` §5 |
+| **D3** | both predicates + status | **594/596** | 9 pass / **2 fail** | **leaves half the ticket** |
+
+**D1 is the obvious fix, and the bait is more direct than 2291's — the incident log names the
+file outright:** `DEBUG availabilityRepo.countOverlapping roomType=STD booked=6 rooms=6`.
+Correcting that one predicate repairs 20 of 26 rows and the ticket's headline symptom
+disappears. But `reservationService` held a second copy that D1 does not touch, so the
+contradiction is not removed — it is **reversed**:
+
+```
+BEFORE    GET  /availability STD 2026-11-10..11-12  → available = 0   "sold out"
+          POST /reservations same dates             → 201 Created
+
+AFTER D1  GET  /availability STD 2026-11-10..11-12  → available = 1   "one room free"
+          POST /reservations same dates             → 409 NO_ROOMS_AVAILABLE
+```
+
+Before the fix the screen hid a sellable room. After D1 the screen offers a room and the
+system then refuses to sell it. D. Ferrand's actual complaint — *"we turn customers away and
+lose bookings"* — is not merely unfixed; it now happens **after** the guest has been told the
+room is available. Rows `C0581`/`C0582` catch it exactly: `available=1;create=status=4xx`.
+Fixing one of two copies of a duplicated rule does not reduce the contradiction, it only
+changes its direction.
+
+**D3 is the second trap.** 594/596, every `AVAIL` and `CREATE` row green, and only
+`E0593`/`E0594` left — which are the **second paragraph of the same ticket**, the guest who
+cannot extend their own booking. A change that closes the headline and leaves the reporter's
+other complaint open is not a closed ticket, and it is easy to miss because `EXTEND` looks
+like a separate feature when it is half the report. D3 also still leaves two parallel
+implementations of one rule, which is the condition that produced the incident.
+
+For this ticket the fixture alone is therefore **not sufficient**: without reading the
+reporter's second complaint, D3 looks complete.
+
+### The fix as shipped
+
+Two files. The second implementation was **deleted, not corrected**.
+
+```js
+// src/repositories/availabilityRepo.js — now the only definition of occupancy
+export function countOverlapping(roomTypeId, checkIn, checkOut, { excludeReservationId = null } = {}) {
+  ...
+        WHERE r.room_type_id = ?
+          AND r.status       = 'confirmed'    // SPEC 5
+          AND r.check_in     <  ?             // SPEC 2, strict
+          AND r.check_out    >  ?             // SPEC 2, strict
+          AND r.id           IS NOT ?         // exclude the reservation being moved
+```
+
+`reservationService.assertRoomsLeft` now calls that function instead of answering the question
+itself; the local `overlaps()` helper and its `findByRoomType` scan are gone. `changeDates`
+passes `{ excludeReservationId: id }`. `grep` confirms no second overlap comparison remains
+in `src/`.
+
+`r.id IS NOT ?` is SQLite's null-safe comparison, so with no exclusion the clause reads
+`IS NOT NULL` and keeps every reservation — one query, no branching.
+
+This is the same principle as the 2291 fix: make the wrong state **unrepresentable** rather
+than corrected in two places. Correcting both copies (candidate D3) would have scored 594/596
+and left the two implementations free to drift apart again on the next change. Deleting one
+means they cannot disagree, because there is no longer a "they".
+
+The counting also moved into SQL for the booking path, which previously loaded every
+reservation of a room type into memory to filter it in JavaScript.
+
+Verified end to end:
+
+```
+STD 2026-11-10..11-12  available 0 → 1      turnover day, the reported symptom
+STD 2026-11-10..11-11  available 0 → 2      one night, both ends
+STD 2026-02-27..03-02  available 5 → 6      arrival on the query's own checkout date
+SUI 2026-10-05..10-09  available 0 → 1      cancelled RES-11081 no longer occupies
+DLX 2026-10-14..10-18  available 0 → 1      cancelled RES-11082 no longer occupies
+SUI 2026-12-02..12-05  available 0          genuinely full, still refused
+POST /reservations STD 2026-11-10..11-12 → 201 (was 409), availability then 0,
+                                              a further booking → 409
+PATCH RES-11150 → 2026-12-02..12-07      → 200 (was 409)
+     a third overlapping SUI booking      → 409, so self-exclusion excludes one booking,
+                                              not the rule
+```
 
 ### Also affected by the same cause
 
-26 fixture rows: `AVAIL` 19, `CREATE` 5, `EXTEND` 2 — full list in
-[`evidence/failing-rows-BEFORE.md`](evidence/failing-rows-BEFORE.md). Business impact:
-turnover-day inventory is invisible, so rooms that are free are not sold, and existing guests
-cannot extend.
+26 fixture rows — `AVAIL` 19, `CREATE` 5, `EXTEND` 2 — listed in
+[`evidence/failing-rows-BEFORE.md`](evidence/failing-rows-BEFORE.md). Beyond the fixture: every
+turnover day at the property was invisible to the booking screen, on all three room types;
+cancelled bookings held their rooms off sale indefinitely; and no staying guest could change
+their own dates. None of it appears on a folio, which is why only the second symptom was ever
+reported.
 
 ### Hardening
 
-Not yet written.
+[`tests/regression-2304-occupancy.test.js`](tests/regression-2304-occupancy.test.js) — 11
+tests, 3 pass / 8 fail before the fix. Built on the witness rows that phase 3 isolated, one
+per defect: `A0456` (departure end), `A0405` (arrival end), `A0479`/`A0487` (cancelled
+bookings), `E0593`/`E0594` (self-competition).
+
+The test that matters most looks at **both surfaces in one test** — it reads availability,
+books the room it was offered, and checks the sale appears. It is the only thing in the suite
+that catches D1, whose failure message states the entire defect:
+
+```
+not ok 8 - 2304: what availability offers, the booking endpoint sells
+    availability offered 1 room(s) and the booking was refused with 409
+```
+
+Measured discrimination
+([`evidence/2304-regression-test-discrimination.md`](evidence/2304-regression-test-discrimination.md)):
+D1 → 6 pass / 5 fail, D2 → 7 pass / 4 fail, **D3 → 9 pass / 2 fail** despite scoring 594/596.
+
+**Three guard tests**, which matter more here than they did for 2291: every candidate fix for
+this ticket works by *relaxing* the count, and over-relaxing oversells the hotel — a worse
+failure than the one being repaired. They pin that a genuinely full room type still reports
+zero, that booking into it is still refused, and — after `RES-11150` is moved — that a third
+overlapping suite booking is still refused, so self-exclusion removes one specific
+reservation rather than the rule.
 
 ### Left alone (and why)
 
-Not yet decided.
+- **`Math.max(0, total_rooms - booked)`** in `availabilityService.js:21`. It hid this defect
+  for a year by rendering an over-count as an ordinary "0 available". With one definition of
+  occupancy the count can no longer exceed the room count, so the clamp is now dead code
+  rather than a mask — removing it would be churn, and keeping it is a harmless floor.
+- **`reservationRepo.findByRoomType`**. No longer used by the booking path, but still used by
+  `/housekeeping/forecast`. Left in place.
+- **Room-type capacity on create.** Still unenforced (see the fixture section below). It is a
+  real `SPEC.md` §2 violation and it is outside both tickets; reported rather than folded in.
 
 ---
 
@@ -549,31 +692,27 @@ sides, so that row isolates the pricing defect from 2304 cleanly.
 
 ### Rows failing after the fix
 
-`npm run verify` → **`570/596 rows match the reference system`** ⇒ **26 mismatched rows**,
-up from 320/596. Raw run: [`evidence/verify-all-AFTER-2291.txt`](evidence/verify-all-AFTER-2291.txt).
-
-| kind | mismatched |
-|---|---:|
-| AVAIL | 19 |
-| CREATE | 5 |
-| EXTEND | 2 |
-| **total** | **26** |
+**None.**
 
 ```
-A0405 A0456 A0459 A0462 A0465 A0468 A0471 A0474 A0479 A0482 A0485 A0487 A0490
-A0494 A0497 A0500 A0501 A0505 A0511
-C0581 C0582 C0583 C0584 C0585
-E0593 E0594
+npm run verify   →  596/596 rows match the reference system
+npm test         →  49 tests, 49 pass, 0 fail
 ```
 
-These 26 ids are **identical, one for one, to group D** as classified before the fix was
-written — the incident 2304 rows. All 250 rows in groups A, B1, B2, B3 and B4 now pass. No
-row that was passing has started failing, and no row outside group D was fixed by accident;
-the grouping made in phase 3 predicted the outcome exactly.
+Raw runs: [`evidence/verify-all-AFTER-2291.txt`](evidence/verify-all-AFTER-2291.txt) (570/596,
+after the first fix) and [`evidence/verify-all-AFTER-2304.txt`](evidence/verify-all-AFTER-2304.txt)
+(596/596).
 
-`npm test`: **38 tests, 38 pass** — the 19 pre-existing tests and the 19 new regression tests.
+| stage | fixture | tests |
+|---|---:|---|
+| before any change | 320/596 | 19 tests, all passing **on broken code** |
+| after the 2291 fix | 570/596 | 38 tests, 38 pass |
+| after the 2304 fix | **596/596** | **49 tests, 49 pass** |
 
-Ticket 2304 accounts for every remaining row and is the next change.
+The 250/26 split between the two incidents was classified in phase 3, **before either fix was
+written**, and both fixes landed exactly on it: after the 2291 fix the 26 remaining ids were
+identical one for one to the rows attributed to 2304, and the 2304 fix closed precisely those.
+No passing row ever started failing, and nothing was fixed by accident.
 
 ### One defect the fixture does not catch
 

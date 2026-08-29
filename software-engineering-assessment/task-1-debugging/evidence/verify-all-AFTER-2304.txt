@@ -1,0 +1,9 @@
+ Container task-1-debugging-pms-run-20a003b4dcdd Creating 
+ Container task-1-debugging-pms-run-20a003b4dcdd Created 
+
+> riverside-pms@2.4.1 verify
+> node --no-warnings=ExperimentalWarning scripts/verify.js
+
+
+  596/596 rows match the reference system
+

@@ -1,3 +1,4 @@
+import * as availabilityRepo from '../repositories/availabilityRepo.js';
 import * as reservationRepo from '../repositories/reservationRepo.js';
 import * as roomTypeRepo from '../repositories/roomTypeRepo.js';
 import { quote, toFolioLines } from './pricingService.js';
@@ -6,20 +7,18 @@ import { conflict, notFound } from '../lib/errors.js';
 /**
  * The house rule: a room type is sold out for a range when the number of confirmed
  * reservations overlapping that range has reached the number of physical rooms.
+ *
+ * "Overlapping" is defined once, in availabilityRepo, and this is the same call
+ * /availability makes. This service used to answer the question itself with a second
+ * implementation, which is how the two surfaces came to disagree (incident 2304).
  */
-function overlaps(reservation, checkIn, checkOut) {
-  return reservation.check_in <= checkOut && reservation.check_out >= checkIn;
-}
-
-function assertRoomsLeft(roomTypeId, checkIn, checkOut) {
+function assertRoomsLeft(roomTypeId, checkIn, checkOut, { excludeReservationId } = {}) {
   const type = roomTypeRepo.findById(roomTypeId);
   if (!type) throw notFound('ROOM_TYPE_NOT_FOUND', `Unknown room type ${roomTypeId}`);
 
-  const booked = reservationRepo
-    .findByRoomType(roomTypeId)
-    .filter((r) => r.status === 'confirmed' && overlaps(r, checkIn, checkOut));
+  const booked = availabilityRepo.countOverlapping(roomTypeId, checkIn, checkOut, { excludeReservationId });
 
-  if (booked.length >= type.total_rooms) {
+  if (booked >= type.total_rooms) {
     throw conflict('NO_ROOMS_AVAILABLE', `${type.name} is sold out for the requested dates`, {
       roomTypeId,
       checkIn,
@@ -55,7 +54,8 @@ export function changeDates(id, checkIn, checkOut) {
     throw conflict('RESERVATION_NOT_CONFIRMED', `Reservation ${id} is ${reservation.status}`);
   }
 
-  assertRoomsLeft(reservation.room_type_id, checkIn, checkOut);
+  // The reservation being moved must not be counted against itself.
+  assertRoomsLeft(reservation.room_type_id, checkIn, checkOut, { excludeReservationId: id });
 
   const quoted = quote(reservation.room_type_id, checkIn, checkOut);
   const updated = reservationRepo.updateDates(id, checkIn, checkOut);
