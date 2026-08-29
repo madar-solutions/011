@@ -1,5 +1,34 @@
-import { isValidDate } from './dates.js';
+import { diffDays, isValidDate } from './dates.js';
 import { badRequest } from './errors.js';
+
+/** SPEC.md 2: a stay is at least one night and at most 180. */
+export const MAX_STAY_NIGHTS = 180;
+
+/**
+ * Validates a half-open date range and returns its length in nights.
+ *
+ * `maxNights` is only passed where the range describes an actual STAY. /rates/preview
+ * takes a window over the rate calendar rather than a stay, so the length cap does not
+ * apply there, but an empty or reversed window is still meaningless everywhere.
+ */
+export function requireRange(from, to, { fromField = 'checkIn', toField = 'checkOut', maxNights } = {}) {
+  const nights = diffDays(from, to);
+  if (nights < 1) {
+    throw badRequest('INVALID_INPUT', `${toField} must be after ${fromField}`, {
+      [fromField]: from,
+      [toField]: to
+    });
+  }
+  if (maxNights !== undefined && nights > maxNights) {
+    throw badRequest('INVALID_INPUT', `a stay may not exceed ${maxNights} nights`, {
+      [fromField]: from,
+      [toField]: to,
+      nights,
+      maxNights
+    });
+  }
+  return nights;
+}
 
 export function requireDate(value, field) {
   if (!isValidDate(value)) {

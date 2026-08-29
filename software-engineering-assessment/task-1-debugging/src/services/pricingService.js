@@ -1,28 +1,67 @@
-import { addDays, maxDate, minDate } from '../lib/dates.js';
+import { enumerateNights } from '../lib/dates.js';
 import { percentOf } from '../lib/money.js';
+import { notFound, unprocessable, badRequest } from '../lib/errors.js';
 import * as rateRepo from '../repositories/rateRepo.js';
+import * as roomTypeRepo from '../repositories/roomTypeRepo.js';
 
 export const CITY_TAX_PERCENT = 12;
 export const RESORT_FEE_CENTS = 1500;
 
+/** A season row covers a night when start_date <= night < end_date (SPEC.md 3). */
+function covers(season, date) {
+  return season.start_date <= date && date < season.end_date;
+}
+
 /**
- * Walks the rate calendar and returns one priced night per night of the stay.
- * The stay is split into a segment per season so that a stay running from one
- * season into the next is billed at each season's own rate.
+ * Returns one priced night per night of the stay, [checkIn, checkOut).
+ *
+ * The stay decides which nights exist; the rate calendar only decides what each of
+ * them costs. Iterating the other way round — walking the seasons and clipping them
+ * to the stay — is what caused incident 2291: it let the shape of a hand-maintained
+ * table determine how many nights a guest was billed for, so adjoining seasons billed
+ * their shared boundary date twice and gaps billed nights zero times.
+ *
+ * This function is total: every night of the stay gets exactly one rate, or the stay
+ * is refused. SPEC.md 3 is explicit that revenue management prefers refusing a booking
+ * over pricing it wrongly, so a night that no season covers — or that two seasons
+ * cover, which would make the price ambiguous — is a business rejection, never a
+ * silently shorter bill and never an invented rate.
  */
 export function resolveNightlyRates(roomTypeId, checkIn, checkOut) {
+  const roomType = roomTypeRepo.findById(roomTypeId);
+  if (!roomType) {
+    throw notFound('ROOM_TYPE_NOT_FOUND', `Unknown room type ${roomTypeId}`);
+  }
+
+  const stay = enumerateNights(checkIn, checkOut);
+  if (stay.length === 0) {
+    throw badRequest('INVALID_INPUT', 'checkOut must be after checkIn', { checkIn, checkOut });
+  }
+
   const seasons = rateRepo.findSeasons(roomTypeId, checkIn, checkOut);
-  const lastNight = addDays(checkOut, -1);
   const nights = [];
+  const unpriced = [];
+  const ambiguous = [];
 
-  for (const season of seasons) {
-    const segmentStart = maxDate(checkIn, season.start_date);
-    const segmentEnd = minDate(lastNight, season.end_date);
-    if (segmentStart > segmentEnd) continue;
+  for (const date of stay) {
+    const covering = seasons.filter((season) => covers(season, date));
+    if (covering.length === 0) unpriced.push(date);
+    else if (covering.length > 1) ambiguous.push(date);
+    else nights.push({ date, season: covering[0].season, rateCents: covering[0].nightly_rate_cents });
+  }
 
-    for (let date = segmentStart; date <= segmentEnd; date = addDays(date, 1)) {
-      nights.push({ date, season: season.season, rateCents: season.nightly_rate_cents });
-    }
+  if (unpriced.length > 0 || ambiguous.length > 0) {
+    throw unprocessable(
+      'RATE_UNAVAILABLE',
+      `No single nightly rate is defined for every night of this stay in ${roomType.name}`,
+      {
+        roomTypeId,
+        checkIn,
+        checkOut,
+        ...(unpriced.length > 0 && { unpricedNights: unpriced }),
+        ...(ambiguous.length > 0 && { ambiguouslyPricedNights: ambiguous })
+      }
+    );
   }
 
   return nights;

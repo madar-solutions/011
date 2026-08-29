@@ -1,0 +1,62 @@
+ Container task-1-debugging-pms-run-8e3c5a044ebc Creating 
+ Container task-1-debugging-pms-run-8e3c5a044ebc Created 
+
+> riverside-pms@2.4.1 verify
+> node --no-warnings=ExperimentalWarning scripts/verify.js
+
+
+  570/596 rows match the reference system
+
+  AVAIL: 19 mismatched
+    A0405  STD 2026-02-27..2026-03-02
+        expected available=6;total=317.40
+        actual   available=5;total=317.40
+    A0456  STD 2026-11-10..2026-11-12
+        expected available=1;total=261.40
+        actual   available=0;total=261.40
+    A0459  STD 2026-11-10..2026-11-11
+        expected available=2;total=138.20
+        actual   available=0;total=138.20
+    A0462  STD 2026-11-10..2026-11-13
+        expected available=1;total=384.60
+        actual   available=0;total=384.60
+    A0465  STD 2026-11-09..2026-11-11
+        expected available=1;total=261.40
+        actual   available=0;total=261.40
+    A0468  STD 2026-11-08..2026-11-10
+        expected available=4;total=261.40
+        actual   available=1;total=261.40
+    A0471  STD 2026-11-12..2026-11-15
+        expected available=3;total=384.60
+        actual   available=2;total=384.60
+    A0474  STD 2026-11-13..2026-11-16
+        expected available=4;total=384.60
+        actual   available=3;total=384.60
+    ... and 11 more (ids: A0479 A0482 A0485 A0487 A0490 A0494 A0497 A0500 A0501 A0505 A0511)
+
+  EXTEND: 2 mismatched
+    E0593  RES-11150 2026-12-02..2026-12-07
+        expected status=2xx
+        actual   status=4xx
+    E0594  RES-11150 2026-12-02..2026-12-04
+        expected status=2xx
+        actual   status=4xx
+
+  CREATE: 5 mismatched
+    C0581  STD 2026-11-10..2026-11-12
+        expected available=1;create=status=2xx
+        actual   available=0;create=status=4xx
+    C0582  STD 2026-11-10..2026-11-11
+        expected available=1;create=status=2xx
+        actual   available=0;create=status=4xx
+    C0583  SUI 2026-10-08..2026-10-11
+        expected available=1;create=status=2xx
+        actual   available=0;create=status=2xx
+    C0584  DLX 2026-10-18..2026-10-21
+        expected available=3;create=status=2xx
+        actual   available=1;create=status=2xx
+    C0585  DLX 2026-09-05..2026-09-09
+        expected available=4;create=status=2xx
+        actual   available=3;create=status=2xx
+
+

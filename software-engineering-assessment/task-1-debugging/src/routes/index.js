@@ -8,7 +8,7 @@ import * as roomTypeRepo from '../repositories/roomTypeRepo.js';
 import { format } from '../lib/money.js';
 import { enumerateNights } from '../lib/dates.js';
 import { notFound, badRequest, unprocessable } from '../lib/errors.js';
-import { requireDate, requireInt, requireString } from '../lib/validate.js';
+import { MAX_STAY_NIGHTS, requireDate, requireInt, requireRange, requireString } from '../lib/validate.js';
 
 export const router = Router();
 
@@ -22,6 +22,7 @@ router.get('/availability', (req, res) => {
   const checkIn = requireDate(req.query.checkIn, 'checkIn');
   const checkOut = requireDate(req.query.checkOut, 'checkOut');
   const guests = req.query.guests === undefined ? undefined : requireInt(req.query.guests, 'guests', { min: 1, max: 8 });
+  requireRange(checkIn, checkOut);
 
   const results = availabilityService.search({ checkIn, checkOut, roomTypeId: req.query.roomTypeId, guests });
   res.json({
@@ -35,6 +36,7 @@ router.post('/quotes', (req, res) => {
   const roomTypeId = parseRoomTypeId(req.body.roomTypeId);
   const checkIn = requireDate(req.body.checkIn, 'checkIn');
   const checkOut = requireDate(req.body.checkOut, 'checkOut');
+  requireRange(checkIn, checkOut, { maxNights: MAX_STAY_NIGHTS });
 
   const quoted = pricingService.quote(roomTypeId, checkIn, checkOut);
   res.json({
@@ -53,6 +55,7 @@ router.get('/rates/preview', (req, res) => {
   const roomTypeId = parseRoomTypeId(req.query.roomTypeId);
   const from = requireDate(req.query.from, 'from');
   const to = requireDate(req.query.to, 'to');
+  requireRange(from, to, { fromField: 'from', toField: 'to' });
 
   const nights = pricingService.resolveNightlyRates(roomTypeId, from, to);
   res.json({
@@ -69,6 +72,7 @@ router.post('/reservations', (req, res) => {
   const checkOut = requireDate(req.body.checkOut, 'checkOut');
   const guestName = requireString(req.body.guestName, 'guestName', { maxLength: 100 });
   const guests = requireInt(req.body.guests, 'guests', { min: 1, max: 8 });
+  requireRange(checkIn, checkOut, { maxNights: MAX_STAY_NIGHTS });
 
   const reservation = reservationService.create({
     guestName,
@@ -88,6 +92,7 @@ router.get('/reservations/:id', (req, res) => {
 router.patch('/reservations/:id', (req, res) => {
   const checkIn = requireDate(req.body.checkIn, 'checkIn');
   const checkOut = requireDate(req.body.checkOut, 'checkOut');
+  requireRange(checkIn, checkOut, { maxNights: MAX_STAY_NIGHTS });
   res.json(present(reservationService.changeDates(req.params.id, checkIn, checkOut)));
 });
 
