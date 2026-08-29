@@ -17,9 +17,11 @@ order the reasoning actually happened — including a prediction that turned out
 a judgement I had to retract — are in [`ANALYSIS-JOURNAL.md`](ANALYSIS-JOURNAL.md), and
 the complete AI session is in [`AI-CONVERSATION.md`](AI-CONVERSATION.md).
 
-> **Status.** Incident 2291 is fully analysed; the fix and the post-fix fixture numbers are
-> the next commit. Incident 2304 has been located and quantified but not yet fixed — its
-> section below says exactly how far it got, and is marked accordingly.
+> **Status.** Incident 2291 is analysed, fixed and verified: the fixture goes from
+> **320/596 to 570/596** and `npm test` from 19 tests to **38, all passing**. The 26 rows
+> that still fail are **exactly** the ones attributed to incident 2304 before the fix was
+> written — same ids, no new failures, nothing fixed by accident. Incident 2304 has been
+> located and quantified but not yet fixed; its section below says how far it got.
 
 ---
 
@@ -243,6 +245,88 @@ while retaining a doubled one at the old rate. This is the fix that silences the
 the front office sees "6 nights" on the confirmation and closes the ticket, and the
 discrepancy stays on the bill. A financial defect that has lost its only witness.
 
+### The fix as shipped
+
+Four files, all of it removing the inversion rather than patching around it.
+
+**`src/services/pricingService.js` — the loop now runs over the stay.**
+
+```js
+const stay = enumerateNights(checkIn, checkOut);        // the stay decides which nights exist
+for (const date of stay) {
+  const covering = seasons.filter((season) => covers(season, date));   // the calendar only prices them
+  if (covering.length === 0) unpriced.push(date);
+  else if (covering.length > 1) ambiguous.push(date);
+  else nights.push({ date, season: covering[0].season, rateCents: covering[0].nightly_rate_cents });
+}
+if (unpriced.length > 0 || ambiguous.length > 0) throw unprocessable('RATE_UNAVAILABLE', …);
+```
+
+The function is now **total**: exactly one rate per night, or the stay is refused. Duplication
+is impossible by construction — the night list is the stay's, so a date cannot appear twice
+however the calendar is shaped. `covers()` states the half-open rule once,
+`start_date <= date < end_date`, instead of leaving it implicit in a loop bound.
+
+Two seasons covering the same night are refused rather than resolved by "first row wins".
+That case does not exist in today's data, but the calendar is maintained by hand and
+`SPEC.md` §3 is clear that refusing beats pricing wrongly — silently picking one of two
+contradictory rates would be the same "confident wrong number" this incident is about,
+arriving through a different door.
+
+**`src/repositories/rateRepo.js` — the other half of the same category error.**
+`start_date <= ? AND end_date >= ?` became `start_date < ? AND end_date > ?`: both ranges
+are half-open, so the overlap test is strict on both sides. This is what stopped an
+already-expired season being returned for a stay arriving on its end date.
+
+**`src/lib/validate.js` — `requireRange(from, to, { maxNights })`**, returning the night
+count and rejecting an empty or reversed range, plus `MAX_STAY_NIGHTS = 180` from
+`SPEC.md` §2.
+
+**`src/routes/index.js`** wires it in. `maxNights` is passed only where the range is an
+actual **stay** — `/quotes`, `POST /reservations`, `PATCH /reservations/:id`. `/rates/preview`
+is a window over the rate calendar rather than a stay, so it gets the range check without the
+length cap; `/availability` is a search surface and gets the same treatment. The fixture does
+not settle this either way — it contains no `PREVIEW` or `AVAIL` row longer than 180 nights —
+so it is a judgement call, recorded here as one.
+
+Status codes follow `SPEC.md` §7's separation of a client error from a business rejection:
+
+| condition | status | code |
+|---|---|---|
+| `checkOut <= checkIn`, or a stay over 180 nights | `400` | `INVALID_INPUT` |
+| unknown room type | `404` | `ROOM_TYPE_NOT_FOUND` |
+| a night with no rate, or with two | `422` | `RATE_UNAVAILABLE` |
+
+The 422 carries the offending dates, which is what makes it actionable at the front desk
+rather than merely correct:
+
+```jsonc
+{ "error": { "code": "RATE_UNAVAILABLE",
+    "message": "No single nightly rate is defined for every night of this stay in Standard Twin",
+    "details": { "roomTypeId": "STD", "checkIn": "2026-12-18", "checkOut": "2026-12-31",
+                 "unpricedNights": ["2026-12-20","2026-12-21","2026-12-22","2026-12-23",
+                                    "2026-12-24","2026-12-25","2026-12-26"] } } }
+```
+
+**The crash path is closed at its source, not patched at the crash site.**
+`cancellationService.js:26` still reads `quoted.nights[0].rateCents` and is now safe: `quote()`
+either returns at least one priced night or throws an `AppError`, so the `TypeError` → 500 is
+unreachable. Nothing was added there — the invariant does the work.
+
+Verified end to end:
+
+```
+POST /quotes  DLX 2026-08-28..2026-09-03  -> 200  six nights, 2026-09-01 once at FESTIVAL,
+                                                  total 1594.20   (was 1829.40)
+POST /quotes  SUI 2026-06-01..2026-06-02  -> 200  one night, 418.20   (was 687.00)
+POST /quotes  STD 2026-12-18..2026-12-31  -> 422  RATE_UNAVAILABLE, seven dates listed
+POST /quotes  DLX 2026-08-28..2026-08-28  -> 400  INVALID_INPUT
+POST /quotes  XXX 2026-08-28..2026-09-03  -> 404  ROOM_TYPE_NOT_FOUND
+POST /quotes  STD 2026-01-01..2026-12-20  -> 400  INVALID_INPUT, 353 nights exceeds 180
+GET  /availability DLX same dates         -> 200  "nights": 6 AND "quotedTotal": "1594.20"
+create(DLX 2027-01-07..2027-01-20)        -> 422  the stay that used to 500 on cancel
+```
+
 ### Also affected by the same cause
 
 Everything funnels through `resolveNightlyRates`:
@@ -465,9 +549,31 @@ sides, so that row isolates the pricing defect from 2304 cleanly.
 
 ### Rows failing after the fix
 
-To be filled in with the fix commit. Expected, from the measured candidate runs: the 249 rows
-in groups A, B1, B2 and B3 close with the 2291 fix; group D closes with 2304; B4 needs the
-`SPEC.md` §2 length cap. The target is 596/596.
+`npm run verify` → **`570/596 rows match the reference system`** ⇒ **26 mismatched rows**,
+up from 320/596. Raw run: [`evidence/verify-all-AFTER-2291.txt`](evidence/verify-all-AFTER-2291.txt).
+
+| kind | mismatched |
+|---|---:|
+| AVAIL | 19 |
+| CREATE | 5 |
+| EXTEND | 2 |
+| **total** | **26** |
+
+```
+A0405 A0456 A0459 A0462 A0465 A0468 A0471 A0474 A0479 A0482 A0485 A0487 A0490
+A0494 A0497 A0500 A0501 A0505 A0511
+C0581 C0582 C0583 C0584 C0585
+E0593 E0594
+```
+
+These 26 ids are **identical, one for one, to group D** as classified before the fix was
+written — the incident 2304 rows. All 250 rows in groups A, B1, B2, B3 and B4 now pass. No
+row that was passing has started failing, and no row outside group D was fixed by accident;
+the grouping made in phase 3 predicted the outcome exactly.
+
+`npm test`: **38 tests, 38 pass** — the 19 pre-existing tests and the 19 new regression tests.
+
+Ticket 2304 accounts for every remaining row and is the next change.
 
 ### One defect the fixture does not catch
 
