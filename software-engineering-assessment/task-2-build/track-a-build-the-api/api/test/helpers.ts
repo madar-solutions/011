@@ -14,7 +14,7 @@ export type SeedUser = {
   displayName: string;
 };
 
-export function seedUser(): SeedUser {
+export function seedUsers(): SeedUser[] {
   const candidates = [
     process.env.SEED_PATH,
     resolve(process.cwd(), 'seed.json'),
@@ -25,7 +25,12 @@ export function seedUser(): SeedUser {
     throw new Error(`seed.json not found. Looked in: ${candidates.join(', ')}`);
   }
   const seed = JSON.parse(readFileSync(path, 'utf8')) as { users: SeedUser[] };
-  const user = seed.users[0];
+  if (!seed.users.length) throw new Error('seed.json has no users');
+  return seed.users;
+}
+
+export function seedUser(): SeedUser {
+  const user = seedUsers()[0];
   if (!user) throw new Error('seed.json has no users');
   return user;
 }
@@ -60,6 +65,27 @@ export function jsonGet(
   return request(path, { headers });
 }
 
+export function jsonPatch(
+  path: string,
+  body: unknown,
+  token?: string,
+): Promise<{ status: number; json: unknown }> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return request(path, { method: 'PATCH', headers, body: JSON.stringify(body) });
+}
+
+export function jsonDelete(
+  path: string,
+  token?: string,
+): Promise<{ status: number; json: unknown }> {
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return request(path, { method: 'DELETE', headers });
+}
+
 export function envelope(json: unknown): { code: string; message: string } {
   assert.equal(typeof json, 'object');
   assert.ok(json && typeof json === 'object' && 'error' in json);
@@ -70,8 +96,7 @@ export function envelope(json: unknown): { code: string; message: string } {
   return error;
 }
 
-export async function loginAsSeedUser(): Promise<string> {
-  const user = seedUser();
+export async function loginAs(user: SeedUser = seedUser()): Promise<string> {
   const login = await jsonPost('/auth/login', {
     username: user.username,
     password: user.password,
@@ -80,4 +105,8 @@ export async function loginAsSeedUser(): Promise<string> {
   const token = (login.json as { token: string }).token;
   assert.equal(typeof token, 'string');
   return token;
+}
+
+export async function loginAsSeedUser(): Promise<string> {
+  return loginAs(seedUser());
 }

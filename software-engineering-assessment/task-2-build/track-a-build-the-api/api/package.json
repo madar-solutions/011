@@ -10,7 +10,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:seed": "prisma db seed",
-    "test:e2e": "tsx --test test/auth.e2e.ts test/products.e2e.ts"
+    "test:e2e": "tsx --test test/auth.e2e.ts test/products.e2e.ts test/cart.e2e.ts test/cart.totals.test.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
