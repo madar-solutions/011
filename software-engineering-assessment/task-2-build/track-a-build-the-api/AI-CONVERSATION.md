@@ -478,3 +478,54 @@ session بلا رمز → 401
 
 > كوميت `test(api)` منفصل عن الميزة: يشرح لماذا المسار عبر nginx وما الذي تثبته الحالات الخمس.
 
+---
+
+## [24] المستخدم
+
+```
+المرحلة الرابعة: كتالوج المنتجات
+Implement the plan as specified
+```
+
+---
+
+## [25] المساعد — كتالوج المنتجات
+
+### ما نُفِّذ
+
+> وحدة `products/` خلف الحارس العالمي (لا `@Public()`). `toProductJson` يثبّت `price` منزلتين. البحث `contains` معلّم على name/sku/description. منتج غائب: `404 NOT_FOUND` «المنتج غير موجود.»
+
+### التحقّق
+
+```
+docker compose --profile test run --rm api-e2e
+tests 10  pass 10  fail 0
+  auth 5 · products 5 (401، 20 منتجًا وstock 0، إبريق، SQL payload، 404)
+```
+
+### توقف
+
+> المرحلة مكتملة. أنتظر الموافقة على الكوميت.
+
+---
+
+## [26] المستخدم
+
+```
+اعتمدت جهز الكوميت
+```
+
+---
+
+## [27] المساعد — كوميت الكتالوج
+
+```
+feat(api): catalog behind the session guard — parameterized search, never raw SQL
+```
+
+> `GET /products` و`GET /products/:id` بلا `@Public()`. الحارس العالمي يبقى مصدر المصادقة.
+> Prisma `contains` معلّم؛ `price` سلسلة منزلتين؛ 404 بالغلاف لا Nest الافتراضي.
+
+---
+
+

@@ -27,7 +27,7 @@ COPY api/test ./test
 COPY seed.json ./seed.json
 ENV SEED_PATH=/app/seed.json
 ENV BASE_URL=http://storefront/api
-CMD ["npx", "tsx", "--test", "test/auth.e2e.ts"]
+CMD ["npx", "tsx", "--test", "test/auth.e2e.ts", "test/products.e2e.ts"]
 
 FROM node:22-alpine AS api
 WORKDIR /app
