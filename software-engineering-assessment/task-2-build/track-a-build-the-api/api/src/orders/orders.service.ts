@@ -166,7 +166,7 @@ export class OrdersService {
       return stored;
     }
     if (parsed && parsed.kind === 'claimed') {
-      await this.abandonPendingIfAny(userId, requestId);
+      await this.abandonReservation(userId, requestId);
     }
     const stored = processingUnavailable();
     await this.redis.set(key, JSON.stringify(stored), ttlSeconds);
@@ -197,7 +197,7 @@ export class OrdersService {
         reference: requestId,
       });
       if (charge.kind === 'declined') {
-        await this.abandonReservation(requestId, snapshot);
+        await this.abandonReservation(snapshot.userId, requestId);
         return {
           statusCode: HttpStatus.PAYMENT_REQUIRED,
           body: errorEnvelope('CARD_DECLINED', 'عذرًا، رُفضت البطاقة.'),
@@ -315,19 +315,7 @@ export class OrdersService {
         priceCents: toCents(item.product.price),
       }));
 
-      for (const line of lines) {
-        const updated = await tx.product.updateMany({
-          where: { id: line.productId, stock: { gte: line.quantity } },
-          data: { stock: { decrement: line.quantity } },
-        });
-        if (updated.count !== 1) {
-          throw new ApiException(
-            HttpStatus.CONFLICT,
-            'INSUFFICIENT_STOCK',
-            'الكمية المطلوبة غير متوفرة.',
-          );
-        }
-      }
+      await this.decrementStock(tx, lines);
 
       await tx.order.create({
         data: {
@@ -370,12 +358,10 @@ export class OrdersService {
     chargeId: string,
   ) {
     return this.prisma.$transaction(async (tx) => {
-      const existing = await tx.order.findUnique({
-        where: {
-          userId_requestId: { userId: snapshot.userId, requestId },
-        },
-      });
-      if (existing?.status === 'paid') return existing;
+      const locked = await this.lockOrder(tx, snapshot.userId, requestId);
+      if (locked?.status === 'paid') {
+        return tx.order.findUniqueOrThrow({ where: { id: locked.id } });
+      }
 
       if (snapshot.couponCode) {
         await tx.$queryRaw`
@@ -410,13 +396,14 @@ export class OrdersService {
         if (!usable.ok) throw this.couponException(usable.reason);
       }
 
-      if (existing?.status === 'pending') {
+      if (locked?.status === 'pending') {
         return tx.order.update({
-          where: { id: existing.id },
+          where: { id: locked.id },
           data: { status: 'paid', chargeId },
         });
       }
 
+      await this.decrementStock(tx, snapshot.lines);
       return tx.order.create({
         data: {
           id: `o_${randomUUID()}`,
@@ -437,28 +424,6 @@ export class OrdersService {
           },
         },
       });
-    });
-  }
-
-  private async abandonPendingIfAny(
-    userId: string,
-    requestId: string,
-  ): Promise<void> {
-    const existing = await this.prisma.order.findUnique({
-      where: { userId_requestId: { userId, requestId } },
-      include: { items: true },
-    });
-    if (!existing || existing.status !== 'pending') return;
-    await this.abandonReservation(requestId, {
-      userId,
-      lines: existing.items.map((item) => ({
-        productId: item.productId,
-        name: item.name,
-        quantity: item.quantity,
-        priceCents: toCents(item.price),
-      })),
-      totalCents: toCents(existing.total),
-      couponCode: existing.couponCode,
     });
   }
 
@@ -489,51 +454,106 @@ export class OrdersService {
       );
       return { kind: 'committed', http };
     }
-    await this.abandonReservation(requestId, snapshot);
+    await this.abandonReservation(snapshot.userId, requestId);
     return { kind: 'abandoned' };
   }
 
-  private async abandonReservation(
+  private async lockOrder(
+    tx: Tx,
+    userId: string,
     requestId: string,
-    snapshot: CheckoutSnapshot,
+  ): Promise<{ id: string; status: string; coupon_code: string | null } | null> {
+    const rows = await tx.$queryRaw<
+      Array<{ id: string; status: string; coupon_code: string | null }>
+    >`
+      SELECT id, status, coupon_code
+      FROM orders
+      WHERE user_id = ${userId} AND request_id = ${requestId}
+      FOR UPDATE
+    `;
+    return rows[0] ?? null;
+  }
+
+  private async lockProducts(tx: Tx, productIds: string[]): Promise<void> {
+    const ids = [...new Set(productIds)].sort();
+    for (const id of ids) {
+      await tx.$queryRaw`
+        SELECT id FROM products WHERE id = ${id} FOR UPDATE
+      `;
+    }
+  }
+
+  private async decrementStock(
+    tx: Tx,
+    lines: ReadonlyArray<{ productId: string; quantity: number }>,
+  ): Promise<void> {
+    await this.lockProducts(
+      tx,
+      lines.map((line) => line.productId),
+    );
+    for (const line of lines) {
+      const updated = await tx.product.updateMany({
+        where: { id: line.productId, stock: { gte: line.quantity } },
+        data: { stock: { decrement: line.quantity } },
+      });
+      if (updated.count !== 1) {
+        throw new ApiException(
+          HttpStatus.CONFLICT,
+          'INSUFFICIENT_STOCK',
+          'الكمية المطلوبة غير متوفرة.',
+        );
+      }
+    }
+  }
+
+  private async abandonReservation(
+    userId: string,
+    requestId: string,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      const existing = await tx.order.findUnique({
-        where: {
-          userId_requestId: { userId: snapshot.userId, requestId },
-        },
+      const order = await this.lockOrder(tx, userId, requestId);
+      if (!order || order.status !== 'pending') return;
+
+      const items = await tx.orderItem.findMany({
+        where: { orderId: order.id },
+        orderBy: { productId: 'asc' },
       });
-      if (!existing || existing.status !== 'pending') return;
-      await tx.order.delete({ where: { id: existing.id } });
-      for (const line of snapshot.lines) {
+      await this.lockProducts(
+        tx,
+        items.map((item) => item.productId),
+      );
+      await tx.order.delete({ where: { id: order.id } });
+
+      for (const item of items) {
         await tx.product.update({
-          where: { id: line.productId },
-          data: { stock: { increment: line.quantity } },
+          where: { id: item.productId },
+          data: { stock: { increment: item.quantity } },
         });
       }
+
       await tx.cart.upsert({
-        where: { userId: snapshot.userId },
+        where: { userId },
         create: {
-          userId: snapshot.userId,
-          couponCode: snapshot.couponCode,
+          userId,
+          couponCode: order.coupon_code,
         },
-        update: { couponCode: snapshot.couponCode },
+        update: { couponCode: order.coupon_code },
       });
-      for (const line of snapshot.lines) {
+      for (const item of items) {
         await tx.cartItem.upsert({
           where: {
             userId_productId: {
-              userId: snapshot.userId,
-              productId: line.productId,
+              userId,
+              productId: item.productId,
             },
           },
           create: {
             id: `ci_${randomUUID()}`,
-            userId: snapshot.userId,
-            productId: line.productId,
-            quantity: line.quantity,
+            userId,
+            productId: item.productId,
+            quantity: item.quantity,
           },
-          update: { quantity: line.quantity },
+          update: { quantity: item.quantity },
         });
       }
     });
