@@ -1,5 +1,0 @@
-services:
-  api:
-    build: ./api
-    ports:
-      - "4000:4000"
