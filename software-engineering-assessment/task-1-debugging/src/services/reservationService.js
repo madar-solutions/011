@@ -2,7 +2,24 @@ import * as availabilityRepo from '../repositories/availabilityRepo.js';
 import * as reservationRepo from '../repositories/reservationRepo.js';
 import * as roomTypeRepo from '../repositories/roomTypeRepo.js';
 import { quote, toFolioLines } from './pricingService.js';
-import { conflict, notFound } from '../lib/errors.js';
+import { conflict, notFound, unprocessable } from '../lib/errors.js';
+
+function requireRoomType(roomTypeId) {
+  const type = roomTypeRepo.findById(roomTypeId);
+  if (!type) throw notFound('ROOM_TYPE_NOT_FOUND', `Unknown room type ${roomTypeId}`);
+  return type;
+}
+
+/** SPEC.md 2: the party may not exceed the room type's capacity. */
+function assertCapacity(type, guests) {
+  if (guests > type.capacity) {
+    throw unprocessable('GUESTS_EXCEED_CAPACITY', `${type.name} sleeps at most ${type.capacity} guests`, {
+      roomTypeId: type.id,
+      guests,
+      capacity: type.capacity
+    });
+  }
+}
 
 /**
  * The house rule: a room type is sold out for a range when the number of confirmed
@@ -12,15 +29,12 @@ import { conflict, notFound } from '../lib/errors.js';
  * /availability makes. This service used to answer the question itself with a second
  * implementation, which is how the two surfaces came to disagree (incident 2304).
  */
-function assertRoomsLeft(roomTypeId, checkIn, checkOut, { excludeReservationId } = {}) {
-  const type = roomTypeRepo.findById(roomTypeId);
-  if (!type) throw notFound('ROOM_TYPE_NOT_FOUND', `Unknown room type ${roomTypeId}`);
-
-  const booked = availabilityRepo.countOverlapping(roomTypeId, checkIn, checkOut, { excludeReservationId });
+function assertRoomsLeft(type, checkIn, checkOut, { excludeReservationId } = {}) {
+  const booked = availabilityRepo.countOverlapping(type.id, checkIn, checkOut, { excludeReservationId });
 
   if (booked >= type.total_rooms) {
     throw conflict('NO_ROOMS_AVAILABLE', `${type.name} is sold out for the requested dates`, {
-      roomTypeId,
+      roomTypeId: type.id,
       checkIn,
       checkOut
     });
@@ -28,7 +42,11 @@ function assertRoomsLeft(roomTypeId, checkIn, checkOut, { excludeReservationId }
 }
 
 export function create({ guestName, roomTypeId, checkIn, checkOut, guests, policyId }) {
-  assertRoomsLeft(roomTypeId, checkIn, checkOut);
+  const type = requireRoomType(roomTypeId);
+  // Capacity is a property of the request itself, so it is checked before occupancy:
+  // three guests never fit a Standard Twin, however many of them are free.
+  assertCapacity(type, guests);
+  assertRoomsLeft(type, checkIn, checkOut);
 
   const quoted = quote(roomTypeId, checkIn, checkOut);
   const reservation = reservationRepo.insert({
@@ -55,7 +73,7 @@ export function changeDates(id, checkIn, checkOut) {
   }
 
   // The reservation being moved must not be counted against itself.
-  assertRoomsLeft(reservation.room_type_id, checkIn, checkOut, { excludeReservationId: id });
+  assertRoomsLeft(requireRoomType(reservation.room_type_id), checkIn, checkOut, { excludeReservationId: id });
 
   const quoted = quote(reservation.room_type_id, checkIn, checkOut);
   const updated = reservationRepo.updateDates(id, checkIn, checkOut);

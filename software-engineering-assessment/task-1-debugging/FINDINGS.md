@@ -17,8 +17,9 @@ order the reasoning actually happened — including a prediction that turned out
 a judgement I had to retract — are in [`ANALYSIS-JOURNAL.md`](ANALYSIS-JOURNAL.md), and
 the complete AI session is in [`AI-CONVERSATION.md`](AI-CONVERSATION.md).
 
-> **Status.** Both incidents are analysed, fixed and verified. The reference fixture goes
-> from **320/596 to 596/596** and `npm test` from 19 tests to **49, all passing**.
+> **Status.** Both incidents are analysed, fixed and verified, plus one defect found on the
+> way that neither ticket reported. The reference fixture goes from **320/596 to 596/596**
+> and `npm test` from 19 tests to **54, all passing**.
 > Incident 2291 accounted for 250 of the 276 failing rows and incident 2304 for the other
 > 26 — a split predicted before either fix was written, and confirmed exactly by both.
 
@@ -645,8 +646,9 @@ reservation rather than the rule.
   rather than a mask — removing it would be churn, and keeping it is a harmless floor.
 - **`reservationRepo.findByRoomType`**. No longer used by the booking path, but still used by
   `/housekeeping/forecast`. Left in place.
-- **Room-type capacity on create.** Still unenforced (see the fixture section below). It is a
-  real `SPEC.md` §2 violation and it is outside both tickets; reported rather than folded in.
+- **`Math.max` and `findByRoomType`** as above. Room-type capacity, previously listed here as
+  reported-not-fixed, has since been fixed at the reviewer's direction — see the fixture
+  section below.
 
 ---
 
@@ -696,7 +698,7 @@ sides, so that row isolates the pricing defect from 2304 cleanly.
 
 ```
 npm run verify   →  596/596 rows match the reference system
-npm test         →  49 tests, 49 pass, 0 fail
+npm test         →  54 tests, 54 pass, 0 fail
 ```
 
 Raw runs: [`evidence/verify-all-AFTER-2291.txt`](evidence/verify-all-AFTER-2291.txt) (570/596,
@@ -707,24 +709,47 @@ after the first fix) and [`evidence/verify-all-AFTER-2304.txt`](evidence/verify-
 |---|---:|---|
 | before any change | 320/596 | 19 tests, all passing **on broken code** |
 | after the 2291 fix | 570/596 | 38 tests, 38 pass |
-| after the 2304 fix | **596/596** | **49 tests, 49 pass** |
+| after the 2304 fix | **596/596** | 49 tests, 49 pass |
+| after the capacity fix | **596/596** | **54 tests, 54 pass** |
 
 The 250/26 split between the two incidents was classified in phase 3, **before either fix was
 written**, and both fixes landed exactly on it: after the 2291 fix the 26 remaining ids were
 identical one for one to the rows attributed to 2304, and the 2304 fix closed precisely those.
 No passing row ever started failing, and nothing was fixed by accident.
 
-### One defect the fixture does not catch
+### One defect the fixture does not catch — found, reported, then fixed
 
-Room-type capacity is never enforced on create:
+Room-type capacity was never enforced on create. `SPEC.md` §2 requires that the party not
+exceed the room type's capacity, and nothing checked it:
 
 ```bash
 curl -s localhost:3000/reservations -H 'content-type: application/json' \
   -d '{"guestName":"probe","roomTypeId":"STD","checkIn":"2026-03-02","checkOut":"2026-03-04","guests":3}'
-# 201 Created — but STD capacity is 2 (SPEC.md §2)
+# was: 201 Created — but a Standard Twin sleeps 2
+# now: 422 {"error":{"code":"GUESTS_EXCEED_CAPACITY",
+#            "message":"Standard Twin sleeps at most 2 guests",
+#            "details":{"roomTypeId":"STD","guests":3,"capacity":2}}}
 ```
 
-`CREATE_GUESTS` only tests `guests: 9`, which trips the generic `1..8` bound in
-`validate.js:11` rather than the capacity rule, so both those rows pass while the rule itself
-is unimplemented. Reported rather than fixed: it is outside both tickets, and it is a
-decision for the reviewer whether it belongs in this change.
+**The fixture cannot see this.** Its two `CREATE_GUESTS` rows only try `guests: 9`, which
+trips the generic `1..8` request bound in `validate.js:11` and never reaches the capacity rule
+— so both rows pass, at full marks, while the rule itself does not exist. A 596/596 score is
+not the same thing as a correct system, and this is the clearest example of it in the
+codebase.
+
+It was reported here rather than fixed unilaterally, because it belongs to neither ticket;
+the reviewer then asked for it to be included, so it is in.
+
+`reservationService` gained `requireRoomType` and `assertCapacity`, and `create` checks
+capacity **before** occupancy: three guests never fit a Standard Twin however many are free,
+so the more fundamental rejection should be the one the guest sees. `422
+GUESTS_EXCEED_CAPACITY` follows the same reading of `SPEC.md` §7 used for the 2291 fix — the
+request is well formed, so it is a business rejection rather than a `400`.
+
+Hardening: [`tests/regression-guest-capacity.test.js`](tests/regression-guest-capacity.test.js),
+5 tests, **3 fail before this change and pass after**. They test one guest over each room
+type's real capacity (3 in STD, 4 in DLX, 5 in SUI), and two guards that pass both before and
+after: a party **exactly at** capacity must still book — the rule is "may not exceed", and
+getting that boundary wrong would replace an unenforced rule with an off-by-one that refuses
+real bookings — and `guests: 9` must stay a `400 INVALID_INPUT` from the generic bound rather
+than becoming a capacity rejection, which is what the fixture's own rows assert.
