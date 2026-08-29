@@ -171,10 +171,13 @@ services:
     environment:
       BASE_URL: http://storefront/api
       SEED_PATH: /app/seed.json
+      PAYMENTS_URL: http://payments:9090
     depends_on:
       api:
         condition: service_healthy
       storefront:
+        condition: service_healthy
+      payments:
         condition: service_healthy
     restart: "no"
 

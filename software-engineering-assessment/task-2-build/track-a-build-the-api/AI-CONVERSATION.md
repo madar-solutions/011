@@ -593,5 +593,64 @@ feat(api): persist cart lines without trusting client prices
 
 ---
 
+## [32] المستخدم
+
+```
+جميل الآن ننتقل لإتمام الشراء والطلبات
+post /orders
+get /orders
+get /orders/:id
+رح نبقى نشتغل على نفس المعايير
+لاتنسى ايدمبوتنسي يلي اشتغلناه في البداية X-Request-Id نعتمده هون كمان مع مفتاح setIfabsent
+الربط مع بوابة الدفع الوهمية (لا تنسى مشكلة التايم اوت والفرق بينها وبين الفرونت)
+المعاملات db transactions
+رح نشتغل زيرو ترست بالنسبة للمدخلات متل ما عملنا سابقا
+tdd e2e مع كتابة اختبار خاص بانقطاع الاتصال  والعميل يحاول بنفس request id
+Implement the plan as specified
+```
+
+---
+
+## [33] المساعد — إتمام الشراء والطلبات
+
+### ما نُفِّذ
+
+> `POST /orders` يتجاهل `summary` ويحسب من السلة + `cart.totals`. حجز مخزون في TX قصيرة، ثم `POST /charge` بمهلة 15 ثانية و`reference=X-Request-Id`، ثم TX ختم `paid` أو إرجاع المخزون.
+> `setIfAbsent` على `idempotency:{userId}:{requestId}`؛ الإعادة تستطلع وتعيد نفس `StoredHttp`. بطاقة `…0069`: إجهاض العميل لا يلغي الخصم (nginx `proxy_ignore_client_abort`).
+
+### التحقّق
+
+```
+docker compose --profile test run --rm api-e2e
+tests 26  pass 26  fail 0
+  auth 5 · cart 6 · cart.totals 4 · orders 6 · products 5
+  abort+same X-Request-Id ~9.5s → خصم واحد
+```
+
+### توقف
+
+> المرحلة مكتملة. أنتظر الموافقة على الكوميت.
+
+---
+
+## [34] المستخدم
+
+```
+اعمل كوميت
+```
+
+---
+
+## [35] المساعد — كوميت الطلبات
+
+```
+feat(api): checkout idempotency — SET NX EX so an 8s abort cannot double-charge
+```
+
+> مهلة البوابة 15 ثانية أطول من إجهاض المتصفح. الإعادة بنفس X-Request-Id تعيد StoredHttp ولا تستدعي /charge مرة ثانية.
+
+---
+
+
 
 

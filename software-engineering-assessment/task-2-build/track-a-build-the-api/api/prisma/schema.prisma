@@ -7,30 +7,32 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Catalog, coupons, and per-user carts. Money is DECIMAL(12,2); line prices
-// are never stored — GET /cart reads Product.price so the catalog stays
-// the single source of truth.
+// Catalog, carts, and paid orders. Line prices are never stored on the cart —
+// GET /cart rereads Product.price. Checkout snapshots name/price onto order
+// items so a later catalog change cannot rewrite a receipt.
 
 model User {
-  id           String @id
-  username     String @unique
-  passwordHash String @map("password_hash")
-  displayName  String @map("display_name")
+  id           String  @id
+  username     String  @unique
+  passwordHash String  @map("password_hash")
+  displayName  String  @map("display_name")
   cart         Cart?
+  orders       Order[]
 
   @@map("users")
 }
 
 model Product {
-  id          String     @id
-  sku         String     @unique
+  id          String      @id
+  sku         String      @unique
   name        String
   category    String
-  price       Decimal    @db.Decimal(12, 2)
+  price       Decimal     @db.Decimal(12, 2)
   stock       Int
-  imageUrl    String     @map("image_url")
+  imageUrl    String      @map("image_url")
   description String
   cartItems   CartItem[]
+  orderItems  OrderItem[]
 
   @@map("products")
 }
@@ -49,6 +51,7 @@ model Coupon {
   perUserLimit   Int?       @map("per_user_limit")
   expiresAt      DateTime?  @map("expires_at")
   carts          Cart[]
+  orders         Order[]
 
   @@map("coupons")
 }
@@ -73,4 +76,34 @@ model CartItem {
 
   @@unique([userId, productId])
   @@map("cart_items")
+}
+
+model Order {
+  id         String      @id
+  userId     String      @map("user_id")
+  status     String
+  total      Decimal     @db.Decimal(12, 2)
+  couponCode String?     @map("coupon_code")
+  chargeId   String?     @map("charge_id")
+  requestId  String      @map("request_id")
+  createdAt  DateTime    @default(now()) @map("created_at")
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  coupon     Coupon?     @relation(fields: [couponCode], references: [code], onDelete: SetNull)
+  items      OrderItem[]
+
+  @@unique([userId, requestId])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String  @id
+  orderId   String  @map("order_id")
+  productId String  @map("product_id")
+  name      String
+  quantity  Int
+  price     Decimal @db.Decimal(12, 2)
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id])
+
+  @@map("order_items")
 }

@@ -44,13 +44,43 @@ export async function request(
   return { status: res.status, json: text ? JSON.parse(text) : null };
 }
 
+export async function abortedPost(
+  path: string,
+  body: unknown,
+  token: string,
+  extraHeaders: Record<string, string>,
+  abortAfterMs: number,
+): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), abortAfterMs);
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+    ...extraHeaders,
+  };
+  try {
+    await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch {
+    // Client abort — nginx must keep the upstream charge running.
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function jsonPost(
   path: string,
   body: unknown,
   token?: string,
+  extraHeaders: Record<string, string> = {},
 ): Promise<{ status: number; json: unknown }> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    ...extraHeaders,
   };
   if (token) headers.Authorization = `Bearer ${token}`;
   return request(path, { method: 'POST', headers, body: JSON.stringify(body) });
