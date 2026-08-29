@@ -255,7 +255,7 @@ Everything funnels through `resolveNightlyRates`:
 | `POST /reservations` | `reservationService.js:34,47` | folio lines and balance |
 | `PATCH /reservations/:id` | `reservationService.js:60,62` | re-priced on every date change |
 | `POST /reservations/:id/cancel` | `cancellationService.js:20,26` | `SAVER` penalty inherits the inflated total; `FLEX` reads `nights[0]` |
-| seed | `src/db/seed-folios.js:8` | **the historical folios in the database are already wrong** |
+| seed | `src/db/seed-folios.js:8` | every folio present at go-live is priced by the same function, so the stored balances are wrong too |
 
 Affected date ranges, from `src/db/seed-data.js`: any stay containing `2026-06-01`,
 `2026-09-01` or `2026-09-08` as one of its nights is over-billed by one night per boundary
@@ -320,9 +320,14 @@ a year in production behind a green suite.
   pass and would be wrong: the reference system expects `4xx` there, and `SPEC.md` §3 says
   revenue management prefers refusing the booking. The gap is a legitimate state of a manually
   maintained table; the system's response to it is the defect.
-- **Repricing the historical folios.** `seed-folios.js` has already stored wrong balances, so
-  the code fix does not correct them. This needs a decision from Finance about scope and about
-  refunds already issued, not a unilateral migration — flagged here rather than acted on.
+- **A folio-repricing migration.** Worth being precise about, because the obvious statement
+  is wrong for *this* deployment. `src/db/index.js` builds an in-memory SQLite database and
+  runs `seedFolios` on every boot, so the seeded folios are recomputed by the fixed code and
+  correct themselves — no migration is needed here, and I checked that all 21 seeded
+  reservations remain priceable, so refusing unpriced stays cannot break startup. On a real
+  deployment with a persistent database the opposite holds: the wrong balances are already
+  written and a code fix does not touch them. That needs a decision from Finance about scope
+  and about refunds already issued, so it is flagged rather than actioned.
 
 ### What I got wrong during this investigation
 
