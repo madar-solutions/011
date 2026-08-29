@@ -9,7 +9,8 @@
     "start:dev": "nest start --watch",
     "prisma:generate": "prisma generate",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "prisma:seed": "prisma db seed"
+    "prisma:seed": "prisma db seed",
+    "test:e2e": "tsx --test test/auth.e2e.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

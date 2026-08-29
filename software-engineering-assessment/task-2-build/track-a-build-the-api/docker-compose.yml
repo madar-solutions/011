@@ -157,6 +157,27 @@ services:
       retries: 8
       start_period: 15s
 
+  # ── Auth e2e (profile: test) ─────────────────────────────────────────────
+  # Speaks to the storefront like a browser: same origin /api, nginx rewrite,
+  # API unpublished. Not started by `docker compose up`.
+  #
+  #     docker compose --profile test run --rm api-e2e
+  api-e2e:
+    profiles: [test]
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+      target: e2e
+    environment:
+      BASE_URL: http://storefront/api
+      SEED_PATH: /app/seed.json
+    depends_on:
+      api:
+        condition: service_healthy
+      storefront:
+        condition: service_healthy
+    restart: "no"
+
 volumes:
   db-data:
   redis-data:
