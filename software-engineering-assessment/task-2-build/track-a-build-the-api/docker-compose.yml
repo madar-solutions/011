@@ -1,24 +1,109 @@
+# Fenwick & Co. storefront — full stack.
+#
+#     docker compose up
+#
+# Works on a clean clone with no manual step: every variable below carries a
+# development default, and `.env` (see .env.example) only overrides them.
+#
+# Service names are roles, not products — `db` and `cache` — because the URLs
+# that reference them (DATABASE_URL, REDIS_URL) outlive any decision about
+# which engine sits behind them.
+name: fenwick
+
 services:
+  # ── Storefront ───────────────────────────────────────────────────────────
+  # Provided, unmodified. Serves the SPA and writes window.APP_CONFIG at boot.
+  # API_BASE_URL is resolved by the BROWSER, so it is a host URL: the browser
+  # is not on the compose network and cannot resolve `api`.
   storefront:
     build: ./frontend
     ports:
-      - "8080:80"
+      - "${STOREFRONT_PORT:-8080}:80"
     environment:
-      # Point this at wherever your API ends up listening.
-      API_BASE_URL: "http://localhost:3000"
+      API_BASE_URL: "${API_BASE_URL:-http://localhost:3000}"
+    restart: unless-stopped
+    healthcheck:
+      # 127.0.0.1, not localhost: /etc/hosts resolves localhost to ::1 first and
+      # nginx here listens on IPv4 only, so `localhost` reports a healthy
+      # service as unhealthy — which would then block anything waiting on it.
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1/index.html"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
+  # ── Payments gateway ─────────────────────────────────────────────────────
+  # Provided, unmodified. State is in memory and is lost on restart, which is
+  # why `restart` is left at the default: an unattended restart would silently
+  # discard the charge ledger the API reconciles against.
   payments:
     build: ./payments-mock
     ports:
-      - "9090:9090"
+      - "${PAYMENTS_PORT:-9090}:9090"
+    healthcheck:
+      # node:22-alpine has no curl; global fetch is available in Node 22.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:9090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
 
-  # Add your backend here, for example:
+  # ── PostgreSQL ───────────────────────────────────────────────────────────
+  # System of record: users, products, coupons, carts, orders. Money is stored
+  # as numeric, never float — the storefront exchanges decimal strings.
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-fenwick}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-fenwick}"
+      POSTGRES_DB: "${POSTGRES_DB:-fenwick}"
+    ports:
+      # Host-side convenience only; containers use db:5432 regardless.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      # Named database, not just the server: `pg_isready` without -d reports
+      # ready before the initdb bootstrap has created it.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ── Redis ────────────────────────────────────────────────────────────────
+  # Sessions and the POST /orders idempotency keys. Persistence is ON: an
+  # idempotency key that disappears on restart lets a retried checkout charge
+  # the customer a second time, so this cache is not disposable.
+  cache:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  # ── API (NestJS) ─────────────────────────────────────────────────────────
+  # Added in the next commit, together with `api-migrate`, a one-shot service
+  # that runs `prisma migrate deploy` and the seed and then exits; the API will
+  # wait on it with `condition: service_completed_successfully`. Its full
+  # environment contract is already documented in .env.example.
   #
-  # api:
-  #   build: ./api
-  #   ports:
-  #     - "3000:3000"
-  #   environment:
-  #     PAYMENTS_URL: "http://payments:9090"
-  #   depends_on:
-  #     - payments
+  # Nothing is stubbed here on purpose: a commented-out service is dead code,
+  # and `docker compose up` must succeed at every commit on this branch.
+
+volumes:
+  db-data:
+  redis-data:
