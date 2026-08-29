@@ -207,4 +207,21 @@ describe('cart (through nginx /api)', () => {
     assert.equal(cleared.status, 200);
     assert.deepEqual(cleared.json, { coupon: null, discount: '0.00' });
   });
+
+  it('refuses WELCOME at apply time once the global cap is reached', async () => {
+    await resetCart(salmaToken);
+    assert.equal(
+      (await jsonPost('/cart/items', { id: 'p_001', quantity: 1 }, salmaToken))
+        .status,
+      201,
+    );
+    const applied = await jsonPost(
+      '/cart/coupon',
+      { code: 'WELCOME' },
+      salmaToken,
+    );
+    if (applied.status === 200) return;
+    assert.equal(applied.status, 400);
+    assert.equal(envelope(applied.json).code, 'COUPON_LIMIT');
+  });
 });

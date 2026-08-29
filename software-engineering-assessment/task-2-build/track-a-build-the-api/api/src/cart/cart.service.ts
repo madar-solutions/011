@@ -38,7 +38,30 @@ export class CartService {
   async get(userId: string): Promise<CartJson> {
     const cart = await this.loadCart(userId);
     if (!cart) return emptyCart();
-    return this.toCartJson(cart);
+    if (!cart.coupon || !cart.couponCode) return this.toCartJson(cart);
+
+    const redemptions = await this.redemptionsTx(
+      this.prisma,
+      userId,
+      cart.couponCode,
+    );
+    const usable = couponDiscount(
+      this.toCouponInput(cart.coupon),
+      this.totalsOf(cart).subtotalCents,
+      new Date(),
+      redemptions,
+    );
+    if (
+      !usable.ok &&
+      (usable.reason === 'COUPON_LIMIT' || usable.reason === 'COUPON_EXPIRED')
+    ) {
+      await this.prisma.cart.update({
+        where: { userId },
+        data: { couponCode: null },
+      });
+      return this.toCartJson({ ...cart, coupon: null, couponCode: null });
+    }
+    return this.toCartJson(cart, redemptions);
   }
 
   async addItem(
@@ -152,14 +175,14 @@ export class CartService {
       const subtotalCents = cart
         ? this.totalsOf(cart).subtotalCents
         : 0;
+      const redemptions = await this.redemptionsTx(tx, userId, coupon.code);
       const result = couponDiscount(
         this.toCouponInput(coupon),
         subtotalCents,
         new Date(),
+        redemptions,
       );
-      if (!result.ok) {
-        throw this.couponException(result.reason);
-      }
+      if (!result.ok) throw this.couponException(result.reason);
 
       await tx.cart.update({
         where: { userId },
@@ -205,8 +228,11 @@ export class CartService {
     });
   }
 
-  private toCartJson(cart: CartRecord): CartJson {
-    const totals = this.totalsOf(cart);
+  private toCartJson(
+    cart: CartRecord,
+    redemptions?: { global: number; user: number },
+  ): CartJson {
+    const totals = this.totalsOf(cart, redemptions);
     return {
       items: cart.items.map(toCartItemJson),
       coupon: cart.couponCode,
@@ -214,7 +240,10 @@ export class CartService {
     };
   }
 
-  private totalsOf(cart: CartRecord) {
+  private totalsOf(
+    cart: CartRecord,
+    redemptions?: { global: number; user: number },
+  ) {
     const lines = cart.items.map((item) => ({
       priceCents: toCents(item.product.price),
       quantity: item.quantity,
@@ -223,7 +252,21 @@ export class CartService {
       lines,
       cart.coupon ? this.toCouponInput(cart.coupon) : null,
       new Date(),
+      redemptions,
     );
+  }
+
+  private async redemptionsTx(
+    tx: Tx | PrismaService,
+    userId: string,
+    couponCode: string,
+  ): Promise<{ global: number; user: number }> {
+    const status = { in: ['paid', 'pending'] };
+    const [global, user] = await Promise.all([
+      tx.order.count({ where: { couponCode, status } }),
+      tx.order.count({ where: { couponCode, userId, status } }),
+    ]);
+    return { global, user };
   }
 
   private toCouponInput(coupon: Coupon): CouponInput {

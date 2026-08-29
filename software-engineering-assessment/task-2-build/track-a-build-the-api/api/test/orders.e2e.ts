@@ -303,33 +303,46 @@ describe('orders checkout (through nginx /api)', () => {
         .status,
       201,
     );
-    assert.equal(
-      (await jsonPost('/cart/coupon', { code: 'WELCOME' }, token)).status,
-      200,
+    const applySalma = await jsonPost(
+      '/cart/coupon',
+      { code: 'WELCOME' },
+      token,
     );
-    assert.equal(
-      (await jsonPost('/cart/coupon', { code: 'WELCOME' }, karimToken)).status,
-      200,
+    const applyKarim = await jsonPost(
+      '/cart/coupon',
+      { code: 'WELCOME' },
+      karimToken,
     );
-
-    const idA = randomUUID();
-    const idB = randomUUID();
-    const [a, b] = await Promise.all([
-      jsonPost('/orders', checkoutBody(approvedCard), token, {
-        'X-Request-Id': idA,
-      }),
-      jsonPost('/orders', checkoutBody(approvedCard), karimToken, {
-        'X-Request-Id': idB,
-      }),
-    ]);
-    const pair = [a, b];
-    const paid = pair.filter((r) => r.status === 201);
-    const limited = pair.filter(
+    const applied = [applySalma, applyKarim].filter((r) => r.status === 200);
+    const blocked = [applySalma, applyKarim].filter(
       (r) => r.status === 400 && envelope(r.json).code === 'COUPON_LIMIT',
     );
-    assert.equal(paid.length + limited.length, 2);
-    assert.ok(paid.length <= 1);
-    assert.ok(limited.length >= 1);
+    assert.equal(applied.length + blocked.length, 2);
+
+    if (applied.length === 2) {
+      const idA = randomUUID();
+      const idB = randomUUID();
+      const [a, b] = await Promise.all([
+        jsonPost('/orders', checkoutBody(approvedCard), token, {
+          'X-Request-Id': idA,
+        }),
+        jsonPost('/orders', checkoutBody(approvedCard), karimToken, {
+          'X-Request-Id': idB,
+        }),
+      ]);
+      const pair = [a, b];
+      const paid = pair.filter((r) => r.status === 201);
+      const limited = pair.filter(
+        (r) => r.status === 400 && envelope(r.json).code === 'COUPON_LIMIT',
+      );
+      assert.equal(paid.length + limited.length, 2);
+      assert.ok(paid.length <= 1);
+      assert.ok(limited.length >= 1);
+    }
+
+    const again = await jsonPost('/cart/coupon', { code: 'WELCOME' }, token);
+    assert.equal(again.status, 400);
+    assert.equal(envelope(again.json).code, 'COUPON_LIMIT');
     },
   );
 });
