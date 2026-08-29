@@ -109,6 +109,47 @@ describe('orders checkout (through nginx /api)', () => {
     assert.equal(envelope(json).code, 'VALIDATION');
   });
 
+  it('rejects a non-date card expiry without calling the gateway', async () => {
+    const requestId = randomUUID();
+    const { status, json } = await jsonPost(
+      '/orders',
+      checkoutBody({ ...approvedCard, expiry: 'not-a-date' }),
+      token,
+      { 'X-Request-Id': requestId },
+    );
+    assert.equal(status, 400);
+    assert.equal(envelope(json).code, 'VALIDATION');
+    assert.match(envelope(json).message, /تاريخ/);
+    assert.equal((await chargesFor(requestId)).length, 0);
+  });
+
+  it('rejects a card number that is not 16 digits without calling the gateway', async () => {
+    const requestId = randomUUID();
+    const { status, json } = await jsonPost(
+      '/orders',
+      checkoutBody({ ...approvedCard, number: '4242' }),
+      token,
+      { 'X-Request-Id': requestId },
+    );
+    assert.equal(status, 400);
+    assert.equal(envelope(json).code, 'VALIDATION');
+    assert.match(envelope(json).message, /16/);
+    assert.equal((await chargesFor(requestId)).length, 0);
+  });
+
+  it('rejects an expired card month without calling the gateway', async () => {
+    const requestId = randomUUID();
+    const { status, json } = await jsonPost(
+      '/orders',
+      checkoutBody({ ...approvedCard, expiry: '01/20' }),
+      token,
+      { 'X-Request-Id': requestId },
+    );
+    assert.equal(status, 400);
+    assert.equal(envelope(json).code, 'VALIDATION');
+    assert.equal((await chargesFor(requestId)).length, 0);
+  });
+
   it('charges catalog total not the client summary and lists the order', async () => {
     await resetCart(token);
     const stockBefore = await productStock(token, mug.id);

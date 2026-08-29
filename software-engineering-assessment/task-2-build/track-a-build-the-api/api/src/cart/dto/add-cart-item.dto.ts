@@ -1,9 +1,10 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 export class AddCartItemDto {
   @IsString({ message: 'المنتج مطلوب.' })
   @IsNotEmpty({ message: 'المنتج مطلوب.' })
+  @MaxLength(64, { message: 'المنتج مطلوب.' })
   id!: string;
 
   @IsOptional()

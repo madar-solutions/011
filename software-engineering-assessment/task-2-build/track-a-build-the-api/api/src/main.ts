@@ -8,7 +8,11 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, { cors: false });
   app.enableShutdownHooks();
   app.useGlobalPipes(
-    new ValidationPipe({ whitelist: true, transform: true }),
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      stopAtFirstError: true,
+    }),
   );
   app.useGlobalFilters(new ApiExceptionFilter());
 

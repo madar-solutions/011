@@ -39,6 +39,15 @@ describe('auth login (through nginx /api)', () => {
     assert.equal(error.code, 'VALIDATION');
   });
 
+  it('rejects an oversized username as validation, not as bad credentials', async () => {
+    const { status, json } = await jsonPost('/auth/login', {
+      username: 'x'.repeat(65),
+      password: user.password,
+    });
+    assert.equal(status, 400);
+    assert.equal(envelope(json).code, 'VALIDATION');
+  });
+
   it('rejects session without a bearer token', async () => {
     const { status, json } = await request('/auth/session');
     assert.equal(status, 401);
