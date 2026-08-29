@@ -9,6 +9,7 @@ import {
   jsonPost,
   loginAs,
   seedUser,
+  seedUsers,
 } from './helpers';
 
 const paymentsUrl = (
@@ -160,6 +161,8 @@ describe('orders checkout (through nginx /api)', () => {
     assert.equal(declined.status, 402);
     assert.equal(envelope(declined.json).code, 'CARD_DECLINED');
     assert.equal(await productStock(token, mug.id), stockBefore);
+    const cart = await jsonGet('/cart', token);
+    assert.equal((cart.json as CartJson).items.length, 1);
 
     const after = await jsonGet('/orders', token);
     assert.equal(
@@ -213,4 +216,79 @@ describe('orders checkout (through nginx /api)', () => {
     assert.equal(error.code, 'NOT_FOUND');
     assert.equal(error.message, 'الطلب غير موجود.');
   });
+
+  it(
+    'takes the cart on the first request id so a second uuid cannot charge twice',
+    { timeout: 25_000 },
+    async () => {
+    await resetCart(token);
+    const added = await jsonPost('/cart/items', mug, token);
+    assert.equal(added.status, 201);
+    const idA = randomUUID();
+    const idB = randomUUID();
+    const body = checkoutBody(approvedCard);
+    const [a, b] = await Promise.all([
+      jsonPost('/orders', body, token, { 'X-Request-Id': idA }),
+      jsonPost('/orders', body, token, { 'X-Request-Id': idB }),
+    ]);
+    const pair = [
+      { id: idA, ...a },
+      { id: idB, ...b },
+    ];
+    const paid = pair.filter((r) => r.status === 201);
+    const empty = pair.filter(
+      (r) => r.status === 400 && envelope(r.json).code === 'VALIDATION',
+    );
+    assert.equal(paid.length, 1);
+    assert.equal(empty.length, 1);
+    assert.equal((await chargesFor(paid[0].id)).length, 1);
+    assert.equal((await chargesFor(empty[0].id)).length, 0);
+    },
+  );
+
+  it(
+    'lets only one paid order redeem WELCOME',
+    { timeout: 25_000 },
+    async () => {
+    const users = seedUsers();
+    const karim = users[1];
+    assert.ok(karim);
+    const karimToken = await loginAs(karim);
+    await resetCart(token);
+    await resetCart(karimToken);
+    assert.equal((await jsonPost('/cart/items', mug, token)).status, 201);
+    assert.equal(
+      (await jsonPost('/cart/items', { id: 'p_011', quantity: 1 }, karimToken))
+        .status,
+      201,
+    );
+    assert.equal(
+      (await jsonPost('/cart/coupon', { code: 'WELCOME' }, token)).status,
+      200,
+    );
+    assert.equal(
+      (await jsonPost('/cart/coupon', { code: 'WELCOME' }, karimToken)).status,
+      200,
+    );
+
+    const idA = randomUUID();
+    const idB = randomUUID();
+    const [a, b] = await Promise.all([
+      jsonPost('/orders', checkoutBody(approvedCard), token, {
+        'X-Request-Id': idA,
+      }),
+      jsonPost('/orders', checkoutBody(approvedCard), karimToken, {
+        'X-Request-Id': idB,
+      }),
+    ]);
+    const pair = [a, b];
+    const paid = pair.filter((r) => r.status === 201);
+    const limited = pair.filter(
+      (r) => r.status === 400 && envelope(r.json).code === 'COUPON_LIMIT',
+    );
+    assert.equal(paid.length + limited.length, 2);
+    assert.ok(paid.length <= 1);
+    assert.ok(limited.length >= 1);
+    },
+  );
 });

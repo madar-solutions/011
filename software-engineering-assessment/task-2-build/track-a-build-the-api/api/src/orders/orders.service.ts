@@ -11,27 +11,30 @@ import {
   type CouponInput,
 } from '../cart/cart.totals';
 import { ApiException } from '../common/api.exception';
-import { errorEnvelope, type StoredHttp } from '../common/error-envelope';
+import {
+  errorEnvelope,
+  storedHttpFromException,
+  type StoredHttp,
+} from '../common/error-envelope';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
-import { withIdempotency } from './idempotency';
-import { toOrderDetail, toOrderListItem, type OrderDetailJson, type OrderListItemJson } from './order.presenter';
+import {
+  CLAIMED,
+  parseIdempotency,
+  processingUnavailable,
+  sleep,
+  type CheckoutSnapshot,
+  type SnapshotLine,
+} from './idempotency';
+import {
+  toOrderDetail,
+  toOrderListItem,
+  type OrderDetailJson,
+  type OrderListItemJson,
+} from './order.presenter';
 import { chargeCard, type ChargeCard } from './payments.client';
 
 type Tx = Prisma.TransactionClient;
-
-type ReservedLine = {
-  productId: string;
-  name: string;
-  quantity: number;
-  priceCents: number;
-};
-
-type PreparedCheckout = {
-  lines: ReservedLine[];
-  totalCents: number;
-  couponCode: string | null;
-};
 
 const lineInclude = { product: true } as const;
 
@@ -50,14 +53,32 @@ export class OrdersService {
   ): Promise<StoredHttp> {
     const ttlSeconds = Number(this.config.get('SESSION_TTL_SECONDS') ?? 86400);
     const timeoutMs = Number(this.config.get('PAYMENTS_TIMEOUT_MS') ?? 15000);
+    const waitMs = timeoutMs + 5_000;
     const key = `idempotency:${userId}:${requestId}`;
-    return withIdempotency(
-      this.redis,
-      key,
-      ttlSeconds,
-      timeoutMs + 5_000,
-      () => this.checkout(userId, requestId, card, timeoutMs),
-    );
+    const claimed = await this.redis.setIfAbsent(key, CLAIMED, ttlSeconds);
+    if (!claimed) {
+      return this.resumeOrWait(userId, key, requestId, ttlSeconds, waitMs);
+    }
+    try {
+      const result = await this.checkout(
+        userId,
+        requestId,
+        card,
+        timeoutMs,
+        key,
+        ttlSeconds,
+      );
+      await this.redis.set(key, JSON.stringify(result), ttlSeconds);
+      return result;
+    } catch (error) {
+      const parsed = parseIdempotency(await this.redis.get(key));
+      if (parsed && 'kind' in parsed && parsed.kind === 'charged') {
+        return storedHttpFromException(error);
+      }
+      const stored = storedHttpFromException(error);
+      await this.redis.set(key, JSON.stringify(stored), ttlSeconds);
+      return stored;
+    }
   }
 
   async list(userId: string): Promise<{ items: OrderListItemJson[] }> {
@@ -70,7 +91,7 @@ export class OrdersService {
 
   async getById(userId: string, id: string): Promise<OrderDetailJson> {
     const order = await this.prisma.order.findFirst({
-      where: { id, userId },
+      where: { id, userId, status: 'paid' },
       include: { items: { orderBy: { id: 'asc' } } },
     });
     if (!order) {
@@ -83,35 +104,86 @@ export class OrdersService {
     return toOrderDetail(order);
   }
 
+  private async resumeOrWait(
+    userId: string,
+    key: string,
+    requestId: string,
+    ttlSeconds: number,
+    waitMs: number,
+  ): Promise<StoredHttp> {
+    const deadline = Date.now() + waitMs;
+    while (Date.now() < deadline) {
+      const parsed = parseIdempotency(await this.redis.get(key));
+      if (parsed && 'statusCode' in parsed) return parsed;
+      if (parsed && parsed.kind === 'charged') {
+        const stored = await this.finishCharged(
+          requestId,
+          parsed.snapshot,
+          parsed.chargeId,
+        );
+        await this.redis.set(key, JSON.stringify(stored), ttlSeconds);
+        return stored;
+      }
+      await sleep(100);
+    }
+
+    const parsed = parseIdempotency(await this.redis.get(key));
+    if (parsed && 'statusCode' in parsed) return parsed;
+    if (parsed && parsed.kind === 'charged') {
+      const stored = await this.finishCharged(
+        requestId,
+        parsed.snapshot,
+        parsed.chargeId,
+      );
+      await this.redis.set(key, JSON.stringify(stored), ttlSeconds);
+      return stored;
+    }
+    if (parsed && parsed.kind === 'reserved') {
+      await this.abandonReservation(requestId, parsed.snapshot);
+      const stored = processingUnavailable();
+      await this.redis.set(key, JSON.stringify(stored), ttlSeconds);
+      return stored;
+    }
+    if (parsed && parsed.kind === 'claimed') {
+      await this.abandonPendingIfAny(userId, requestId);
+    }
+    const stored = processingUnavailable();
+    await this.redis.set(key, JSON.stringify(stored), ttlSeconds);
+    return stored;
+  }
+
   private async checkout(
     userId: string,
     requestId: string,
     card: ChargeCard,
     timeoutMs: number,
+    key: string,
+    ttlSeconds: number,
   ): Promise<StoredHttp> {
-    const prepared = await this.prepare(userId);
-    await this.reserve(prepared.lines);
+    const snapshot = await this.claimCart(userId, requestId);
+    await this.redis.set(
+      key,
+      JSON.stringify({ kind: 'reserved', snapshot }),
+      ttlSeconds,
+    );
     let charged = false;
     try {
       const charge = await chargeCard({
         url: this.config.getOrThrow<string>('PAYMENTS_URL'),
         timeoutMs,
-        amount: formatMoney(prepared.totalCents),
+        amount: formatMoney(snapshot.totalCents),
         card,
         reference: requestId,
       });
       if (charge.kind === 'declined') {
-        await this.release(prepared.lines);
+        await this.abandonReservation(requestId, snapshot);
         return {
           statusCode: HttpStatus.PAYMENT_REQUIRED,
-          body: errorEnvelope(
-            'CARD_DECLINED',
-            'عذرًا، رُفضت البطاقة.',
-          ),
+          body: errorEnvelope('CARD_DECLINED', 'عذرًا، رُفضت البطاقة.'),
         };
       }
       if (charge.kind === 'unavailable') {
-        await this.release(prepared.lines);
+        await this.abandonReservation(requestId, snapshot);
         return {
           statusCode: HttpStatus.SERVICE_UNAVAILABLE,
           body: errorEnvelope(
@@ -120,92 +192,102 @@ export class OrdersService {
           ),
         };
       }
-      charged = true;
-      const order = await this.commit(
-        userId,
-        requestId,
-        prepared,
-        charge.chargeId,
+      await this.redis.set(
+        key,
+        JSON.stringify({
+          kind: 'charged',
+          snapshot,
+          chargeId: charge.chargeId,
+        }),
+        ttlSeconds,
       );
-      return { statusCode: HttpStatus.CREATED, body: toOrderListItem(order) };
+      charged = true;
+      return this.finishCharged(requestId, snapshot, charge.chargeId);
     } catch (error) {
-      if (!charged) await this.release(prepared.lines);
+      if (!charged) await this.abandonReservation(requestId, snapshot);
       throw error;
     }
   }
 
-  private async prepare(userId: string): Promise<PreparedCheckout> {
-    const cart = await this.prisma.cart.findUnique({
-      where: { userId },
-      include: {
-        coupon: true,
-        items: { include: lineInclude, orderBy: { id: 'asc' } },
-      },
-    });
-    if (!cart || cart.items.length === 0) {
-      throw new ApiException(
-        HttpStatus.BAD_REQUEST,
-        'VALIDATION',
-        'السلة فارغة.',
-      );
-    }
+  private async finishCharged(
+    requestId: string,
+    snapshot: CheckoutSnapshot,
+    chargeId: string,
+  ): Promise<StoredHttp> {
+    const order = await this.commitPaid(snapshot, requestId, chargeId);
+    return { statusCode: HttpStatus.CREATED, body: toOrderListItem(order) };
+  }
 
-    const redemptions = cart.coupon
-      ? await this.redemptions(userId, cart.coupon.code)
-      : undefined;
-    if (cart.coupon) {
-      const subtotalCents = cart.items.reduce(
-        (sum, item) => sum + toCents(item.product.price) * item.quantity,
-        0,
-      );
-      const usable = couponDiscount(
-        this.toCouponInput(cart.coupon),
-        subtotalCents,
+  private async claimCart(
+    userId: string,
+    requestId: string,
+  ): Promise<CheckoutSnapshot> {
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ user_id: string }>>`
+        SELECT user_id FROM carts WHERE user_id = ${userId} FOR UPDATE
+      `;
+      if (locked.length === 0) {
+        throw new ApiException(
+          HttpStatus.BAD_REQUEST,
+          'VALIDATION',
+          'السلة فارغة.',
+        );
+      }
+
+      const cart = await tx.cart.findUnique({
+        where: { userId },
+        include: {
+          coupon: true,
+          items: { include: lineInclude, orderBy: { id: 'asc' } },
+        },
+      });
+      if (!cart || cart.items.length === 0) {
+        throw new ApiException(
+          HttpStatus.BAD_REQUEST,
+          'VALIDATION',
+          'السلة فارغة.',
+        );
+      }
+
+      if (cart.coupon) {
+        await tx.$queryRaw`
+          SELECT 1 FROM coupons WHERE code = ${cart.coupon.code} FOR UPDATE
+        `;
+        const redemptions = await this.redemptionsTx(
+          tx,
+          userId,
+          cart.coupon.code,
+          true,
+        );
+        const subtotalCents = cart.items.reduce(
+          (sum, item) => sum + toCents(item.product.price) * item.quantity,
+          0,
+        );
+        const usable = couponDiscount(
+          this.toCouponInput(cart.coupon),
+          subtotalCents,
+          new Date(),
+          redemptions,
+        );
+        if (!usable.ok) throw this.couponException(usable.reason);
+      }
+
+      const totals = cartTotals(
+        cart.items.map((item) => ({
+          priceCents: toCents(item.product.price),
+          quantity: item.quantity,
+        })),
+        cart.coupon ? this.toCouponInput(cart.coupon) : null,
         new Date(),
-        redemptions,
       );
-      if (!usable.ok) throw this.couponException(usable.reason);
-    }
 
-    const totals = cartTotals(
-      cart.items.map((item) => ({
-        priceCents: toCents(item.product.price),
-        quantity: item.quantity,
-      })),
-      cart.coupon ? this.toCouponInput(cart.coupon) : null,
-      new Date(),
-      redemptions,
-    );
-
-    return {
-      lines: cart.items.map((item) => ({
+      const lines: SnapshotLine[] = cart.items.map((item) => ({
         productId: item.productId,
         name: item.product.name,
         quantity: item.quantity,
         priceCents: toCents(item.product.price),
-      })),
-      totalCents: totals.totalCents,
-      couponCode: cart.couponCode,
-    };
-  }
+      }));
 
-  private async redemptions(
-    userId: string,
-    couponCode: string,
-  ): Promise<{ global: number; user: number }> {
-    const [global, user] = await Promise.all([
-      this.prisma.order.count({
-        where: { couponCode, status: 'paid' },
-      }),
-      this.prisma.order.count({
-        where: { couponCode, userId, status: 'paid' },
-      }),
-    ]);
-    return { global, user };
-  }
-
-  private async reserve(lines: ReservedLine[]): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
       for (const line of lines) {
         const updated = await tx.product.updateMany({
           where: { id: line.productId, stock: { gte: line.quantity } },
@@ -219,38 +301,17 @@ export class OrdersService {
           );
         }
       }
-    });
-  }
 
-  private async release(lines: ReservedLine[]): Promise<void> {
-    await this.prisma.$transaction(async (tx: Tx) => {
-      for (const line of lines) {
-        await tx.product.update({
-          where: { id: line.productId },
-          data: { stock: { increment: line.quantity } },
-        });
-      }
-    });
-  }
-
-  private async commit(
-    userId: string,
-    requestId: string,
-    prepared: PreparedCheckout,
-    chargeId: string,
-  ) {
-    return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.create({
+      await tx.order.create({
         data: {
           id: `o_${randomUUID()}`,
           userId,
-          status: 'paid',
-          total: formatMoney(prepared.totalCents),
-          couponCode: prepared.couponCode,
-          chargeId,
+          status: 'pending',
+          total: formatMoney(totals.totalCents),
+          couponCode: cart.couponCode,
           requestId,
           items: {
-            create: prepared.lines.map((line) => ({
+            create: lines.map((line) => ({
               id: randomUUID(),
               productId: line.productId,
               name: line.name,
@@ -260,13 +321,182 @@ export class OrdersService {
           },
         },
       });
+
       await tx.cartItem.deleteMany({ where: { userId } });
-      await tx.cart.updateMany({
+      await tx.cart.update({
         where: { userId },
         data: { couponCode: null },
       });
-      return order;
+
+      return {
+        userId,
+        lines,
+        totalCents: totals.totalCents,
+        couponCode: cart.couponCode,
+      };
     });
+  }
+
+  private async commitPaid(
+    snapshot: CheckoutSnapshot,
+    requestId: string,
+    chargeId: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.order.findUnique({
+        where: {
+          userId_requestId: { userId: snapshot.userId, requestId },
+        },
+      });
+      if (existing?.status === 'paid') return existing;
+
+      if (snapshot.couponCode) {
+        await tx.$queryRaw`
+          SELECT 1 FROM coupons WHERE code = ${snapshot.couponCode} FOR UPDATE
+        `;
+        const coupon = await tx.coupon.findUnique({
+          where: { code: snapshot.couponCode },
+        });
+        if (!coupon) {
+          throw new ApiException(
+            HttpStatus.BAD_REQUEST,
+            'COUPON_NOT_FOUND',
+            'كود الخصم غير صالح.',
+          );
+        }
+        const redemptions = await this.redemptionsTx(
+          tx,
+          snapshot.userId,
+          coupon.code,
+          false,
+        );
+        const subtotalCents = snapshot.lines.reduce(
+          (sum, line) => sum + line.priceCents * line.quantity,
+          0,
+        );
+        const usable = couponDiscount(
+          this.toCouponInput(coupon),
+          subtotalCents,
+          new Date(),
+          redemptions,
+        );
+        if (!usable.ok) throw this.couponException(usable.reason);
+      }
+
+      if (existing?.status === 'pending') {
+        return tx.order.update({
+          where: { id: existing.id },
+          data: { status: 'paid', chargeId },
+        });
+      }
+
+      return tx.order.create({
+        data: {
+          id: `o_${randomUUID()}`,
+          userId: snapshot.userId,
+          status: 'paid',
+          total: formatMoney(snapshot.totalCents),
+          couponCode: snapshot.couponCode,
+          chargeId,
+          requestId,
+          items: {
+            create: snapshot.lines.map((line) => ({
+              id: randomUUID(),
+              productId: line.productId,
+              name: line.name,
+              quantity: line.quantity,
+              price: formatMoney(line.priceCents),
+            })),
+          },
+        },
+      });
+    });
+  }
+
+  private async abandonPendingIfAny(
+    userId: string,
+    requestId: string,
+  ): Promise<void> {
+    const existing = await this.prisma.order.findUnique({
+      where: { userId_requestId: { userId, requestId } },
+      include: { items: true },
+    });
+    if (!existing || existing.status !== 'pending') return;
+    await this.abandonReservation(requestId, {
+      userId,
+      lines: existing.items.map((item) => ({
+        productId: item.productId,
+        name: item.name,
+        quantity: item.quantity,
+        priceCents: toCents(item.price),
+      })),
+      totalCents: toCents(existing.total),
+      couponCode: existing.couponCode,
+    });
+  }
+
+  private async abandonReservation(
+    requestId: string,
+    snapshot: CheckoutSnapshot,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.order.findUnique({
+        where: {
+          userId_requestId: { userId: snapshot.userId, requestId },
+        },
+      });
+      if (existing?.status === 'paid') return;
+      if (existing?.status === 'pending') {
+        await tx.order.delete({ where: { id: existing.id } });
+      }
+      for (const line of snapshot.lines) {
+        await tx.product.update({
+          where: { id: line.productId },
+          data: { stock: { increment: line.quantity } },
+        });
+      }
+      await tx.cart.upsert({
+        where: { userId: snapshot.userId },
+        create: {
+          userId: snapshot.userId,
+          couponCode: snapshot.couponCode,
+        },
+        update: { couponCode: snapshot.couponCode },
+      });
+      for (const line of snapshot.lines) {
+        await tx.cartItem.upsert({
+          where: {
+            userId_productId: {
+              userId: snapshot.userId,
+              productId: line.productId,
+            },
+          },
+          create: {
+            id: `ci_${randomUUID()}`,
+            userId: snapshot.userId,
+            productId: line.productId,
+            quantity: line.quantity,
+          },
+          update: { quantity: line.quantity },
+        });
+      }
+    });
+  }
+
+  private async redemptionsTx(
+    tx: Tx,
+    userId: string,
+    couponCode: string,
+    includePending: boolean,
+  ): Promise<{ global: number; user: number }> {
+    const status = includePending
+      ? { in: ['paid', 'pending'] }
+      : { equals: 'paid' };
+    const [global, user] = await Promise.all([
+      tx.order.count({ where: { couponCode, status } }),
+      tx.order.count({ where: { couponCode, userId, status } }),
+    ]);
+    return { global, user };
   }
 
   private toCouponInput(coupon: Coupon): CouponInput {
