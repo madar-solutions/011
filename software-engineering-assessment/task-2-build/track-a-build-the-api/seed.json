@@ -1,0 +1,36 @@
+{
+  "users": [
+    { "id": "u_salma", "username": "salma", "password": "correct-horse-9", "displayName": "سلمى الحسيني" },
+    { "id": "u_karim", "username": "karim", "password": "hunter2-please",  "displayName": "كريم الفارس" }
+  ],
+  "products": [
+    { "id": "p_001", "sku": "MUG-STONE-01", "name": "كوب حجري",                    "category": "kitchen", "price": "18.00",  "stock": 42,  "imageUrl": "/img/mug.jpg",      "description": "مشغول يدويًا، سعة 350 مل." },
+    { "id": "p_002", "sku": "KTL-COP-02",   "name": "إبريق تقطير نحاسي",            "category": "kitchen", "price": "89.50",  "stock": 12,  "imageUrl": "/img/kettle.jpg",   "description": "فوهة رفيعة منحنية، سعة لتر واحد." },
+    { "id": "p_003", "sku": "GRD-HAND-03",  "name": "مطحنة قهوة يدوية",             "category": "kitchen", "price": "64.00",  "stock": 7,   "imageUrl": "/img/grinder.jpg",  "description": "أسنان مخروطية قياس 38 مم." },
+    { "id": "p_004", "sku": "NTB-LIN-04",   "name": "دفتر بغلاف كتّان",              "category": "desk",    "price": "12.50",  "stock": 130, "imageUrl": "/img/notebook.jpg", "description": "مقاس A5، صفحات منقّطة، 192 صفحة." },
+    { "id": "p_005", "sku": "PEN-BRS-05",   "name": "قلم حبر نحاسي",                "category": "desk",    "price": "76.00",  "stock": 9,   "imageUrl": "/img/pen.jpg",      "description": "سنّ متوسط، تعبئة بالمكبس." },
+    { "id": "p_006", "sku": "INK-MID-06",   "name": "حبر ليلي، 50 مل",              "category": "desk",    "price": "14.00",  "stock": 61,  "imageUrl": "/img/ink.jpg",      "description": "أزرق مائل إلى السواد." },
+    { "id": "p_007", "sku": "LMP-ARC-07",   "name": "مصباح مكتب مقوّس",              "category": "desk",    "price": "142.00", "stock": 4,   "imageUrl": "/img/lamp.jpg",     "description": "إضاءة دافئة قابلة للتعتيم." },
+    { "id": "p_008", "sku": "STP-RUB-08",   "name": "طقم أختام مطاطية",             "category": "desk",    "price": "0.01",   "stock": 500, "imageUrl": "/img/stamp.jpg",    "description": "تصفية. ستة أختام دون وسادة حبر." },
+    { "id": "p_009", "sku": "BAG-CAN-09",   "name": "حقيبة كتّان مشمّع",              "category": "carry",   "price": "168.00", "stock": 6,   "imageUrl": "/img/bag.jpg",      "description": "جيب للحاسوب حتى 16 بوصة." },
+    { "id": "p_010", "sku": "WAL-VEG-10",   "name": "محفظة جلد مدبوغ نباتيًا",        "category": "carry",   "price": "54.00",  "stock": 23,  "imageUrl": "/img/wallet.jpg",   "description": "ستة جيوب للبطاقات." },
+    { "id": "p_011", "sku": "KEY-TIT-11",   "name": "حلقة مفاتيح تيتانيوم",          "category": "carry",   "price": "22.00",  "stock": 88,  "imageUrl": "/img/keyring.jpg",  "description": "مخرطة، وزن 34 غرامًا." },
+    { "id": "p_012", "sku": "UMB-STM-12",   "name": "مظلة مقاومة للعواصف",           "category": "carry",   "price": "48.00",  "stock": 0,   "imageUrl": "/img/umbrella.jpg", "description": "أضلاع فيبرغلاس. غير متوفرة حاليًا." },
+    { "id": "p_013", "sku": "BLK-WOO-13",   "name": "بطانية صوف",                   "category": "home",    "price": "125.00", "stock": 15,  "imageUrl": "/img/blanket.jpg",  "description": "قياس 130 × 180 سم، دون صباغة." },
+    { "id": "p_014", "sku": "LDG-FLD-14",   "name": "دفتر جيب للملاحظات الميدانية",   "category": "desk",    "price": "9.00",   "stock": 1,   "imageUrl": "/img/ledger.jpg",   "description": "آخر قطعة من دفعة 2019." },
+    { "id": "p_015", "sku": "CND-BEE-15",   "name": "شمعتا شمع العسل",              "category": "home",    "price": "16.00",  "stock": 74,  "imageUrl": "/img/candle.jpg",   "description": "بلا عطر، تدوم ثماني ساعات." },
+    { "id": "p_016", "sku": "VSE-CER-16",   "name": "مِزهرية خزفية « ضباب الصيف » — 花瓶 — Керамическая ваза — واسمٌ طويل بإفراط، محشوٌّ بعلامات الترقيم، يمضي إلى ما بعد النقطة التي كان أي فهرس عاقل ليتوقّف عندها، مع فواصل وشُرَط — ونقاط حذف في آخره…", "category": "home", "price": "97.00", "stock": 3, "imageUrl": "/img/vase.jpg", "description": "طلاء مطفأ، ارتفاع 24 سم." },
+    { "id": "p_017", "sku": "TRY-OAK-17",   "name": "صينية بلوط",                   "category": "home",    "price": "38.00",  "stock": 19,  "imageUrl": "/img/tray.jpg",     "description": "مزيّتة، 22 × 15 سم." },
+    { "id": "p_018", "sku": "SCR-MUL-18",   "name": "مفك متعدد الرؤوس",              "category": "tools",   "price": "29.00",  "stock": 33,  "imageUrl": "/img/driver.jpg",   "description": "اثنتا عشرة رأسًا، مغناطيسي." },
+    { "id": "p_019", "sku": "TAP-MSR-19",   "name": "شريط قياس",                    "category": "tools",   "price": "26.50",  "stock": 27,  "imageUrl": "/img/tape.jpg",     "description": "5 أمتار، متري وإنشي." },
+    { "id": "p_020", "sku": "KNF-GRD-20",   "name": "سكين حديقة",                   "category": "tools",   "price": "44.00",  "stock": 11,  "imageUrl": "/img/knife.jpg",    "description": "فولاذ مقاوم للصدأ مع غمد جلدي." }
+  ],
+  "coupons": [
+    { "code": "SAVE10",      "type": "percent", "value": "10", "minOrder": "50.00" },
+    { "code": "FLAT20",      "type": "amount",  "value": "20.00" },
+    { "code": "WELCOME",     "type": "percent", "value": "15", "maxRedemptions": 1 },
+    { "code": "ONEPERUSER",  "type": "amount",  "value": "5.00", "perUserLimit": 1 },
+    { "code": "EXPIRED2024", "type": "percent", "value": "25", "expiresAt": "2024-12-31T23:59:59Z" },
+    { "code": "HALFOFF",     "type": "percent", "value": "50", "minOrder": "200.00" }
+  ]
+}

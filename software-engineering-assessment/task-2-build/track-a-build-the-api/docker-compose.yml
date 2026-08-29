@@ -1,0 +1,24 @@
+services:
+  storefront:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    environment:
+      # Point this at wherever your API ends up listening.
+      API_BASE_URL: "http://localhost:3000"
+
+  payments:
+    build: ./payments-mock
+    ports:
+      - "9090:9090"
+
+  # Add your backend here, for example:
+  #
+  # api:
+  #   build: ./api
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     PAYMENTS_URL: "http://payments:9090"
+  #   depends_on:
+  #     - payments
