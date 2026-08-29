@@ -12,15 +12,19 @@ name: fenwick
 
 services:
   # ── Storefront ───────────────────────────────────────────────────────────
-  # Provided, unmodified. Serves the SPA and writes window.APP_CONFIG at boot.
-  # API_BASE_URL is resolved by the BROWSER, so it is a host URL: the browser
-  # is not on the compose network and cannot resolve `api`.
+  # Serves the SPA, writes window.APP_CONFIG at boot, and reverse-proxies /api
+  # to the API. This is the ONLY entrance to the stack: the API is not published
+  # on the host, so nothing can bypass it.
+  #
+  # API_BASE_URL is a same-origin path, not a host URL. The browser therefore
+  # never makes a cross-origin request, so CORS does not apply at all.
+  # nginx.conf is modified from the provided version; the Dockerfile is not.
   storefront:
     build: ./frontend
     ports:
       - "${STOREFRONT_PORT:-8080}:80"
     environment:
-      API_BASE_URL: "${API_BASE_URL:-http://localhost:3000}"
+      API_BASE_URL: "${API_BASE_URL:-/api}"
     restart: unless-stopped
     healthcheck:
       # 127.0.0.1, not localhost: /etc/hosts resolves localhost to ::1 first and
