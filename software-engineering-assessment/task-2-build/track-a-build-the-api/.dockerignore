@@ -1,0 +1,11 @@
+# Build context is the track root so seed.json (given, not copied into api/)
+# can be baked into the migrate image. The SPA and payments-mock are not
+# part of this image — they have their own Dockerfiles.
+.git
+**/node_modules
+**/dist
+frontend
+payments-mock
+.env
+*.md
+AI-CONVERSATION.md
