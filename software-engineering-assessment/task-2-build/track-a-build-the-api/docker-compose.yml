@@ -100,13 +100,20 @@ services:
       start_period: 3s
 
   # ── One-shot migrator ────────────────────────────────────────────────────
-  # Applies Prisma migrations and loads seed.json, then exits 0. The API waits
-  # on `service_completed_successfully`, so a failed migrate never boots a
-  # server against an empty or half-applied schema.
+  # prisma migrate reset --force: drop the database, apply migrations, seed,
+  # then exit 0. The API waits on `service_completed_successfully`, so a
+  # failed migrate never boots a server against an empty or half-applied schema.
   #
-  # Same image family as `api`, different target: this stage keeps the Prisma
-  # CLI and tsx; the runtime image does not. No restart: a crash-loop would
-  # hide a bad migration behind "still starting".
+  # Reset on purpose (not `migrate deploy`): this stack is the reviewer's
+  # first look at the shop. Leftover paid orders spend WELCOME (max 1),
+  # decrement catalog stock, and leave carts that are not in seed.json.
+  # Production would use `migrate deploy` and never drop data on boot.
+  #
+  # The migrator runs when its container is created — after `down -v`, or on
+  # a clean clone. A second `docker compose up` without recreating it leaves
+  # data in place. Same image family as `api`, different target: this stage
+  # keeps the Prisma CLI and tsx; the runtime image does not. No restart: a
+  # crash-loop would hide a bad migration behind "still starting".
   api-migrate:
     build:
       context: .

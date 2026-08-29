@@ -13,12 +13,15 @@ COPY api/tsconfig.json api/tsconfig.build.json api/nest-cli.json ./
 COPY api/src ./src
 RUN npm run build
 
-# One-shot: apply migrations, load seed.json, exit. Full node_modules (tsx,
-# prisma CLI) stay here; they are not in the runtime image.
+# One-shot: drop the database, re-apply migrations, load seed.json, exit.
+# Full node_modules (tsx, prisma CLI) stay here; they are not in the runtime
+# image. Reset — not deploy — is deliberate for this assessment: leftover
+# orders would spend WELCOME, drain stock, and leave carts that are not in
+# seed.json, so a reviewer would not see the shop the seed file describes.
 FROM deps AS migrate
 COPY seed.json ./seed.json
 ENV SEED_PATH=/app/seed.json
-CMD ["sh", "-c", "npx prisma migrate deploy && npx prisma db seed"]
+CMD ["sh", "-c", "npx prisma migrate reset --force --skip-generate"]
 
 # Hits the storefront's /api (nginx), not the unpublished :3000. Profile
 # `test` only — `docker compose up` must not run this.
